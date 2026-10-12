@@ -145,10 +145,10 @@ const sandbox = {
   UrlFetchApp,
   DocumentApp,
   Logger: { log: console.log },
-  HtmlService: {},
+  HtmlService: { createHtmlOutputFromFile: (n) => fs.readFileSync(path.join(SRC, n + '.html'), 'utf8') },
 };
 vm.createContext(sandbox);
-fs.readdirSync(SRC).filter((f) => f.endsWith('.gs')).sort().forEach((f) => {
+fs.readdirSync(SRC).filter((f) => f.endsWith('.gs') && !(process.env.SKIP_FILES || '').split(',').includes(f)).sort().forEach((f) => {
   vm.runInContext(fs.readFileSync(path.join(SRC, f), 'utf8'), sandbox, { filename: f });
 });
 

@@ -48,9 +48,19 @@ clasp push
 ```
 Lanjutkan dari langkah 5 Cara A.
 
+### Jika muncul error (mis. "dashboard_ is not defined")
+
+1. Di editor Apps Script, pilih fungsi **`cekInstalasi`** → **Run** → lihat *Execution log*.
+   Fungsi ini menyebut file mana yang belum lengkap.
+2. Salin ulang file itu **utuh** (Ctrl+A di GitHub → *Raw* → Ctrl+A, Ctrl+C), tempel menggantikan seluruh isi lama, lalu **Ctrl+S**.
+   Pastikan file `.gs` dibuat sebagai *Script* dan file `.html` sebagai *HTML*, dengan nama persis sama.
+3. Jika editor menandai error sintaks (garis merah), biasanya ada bagian yang terpotong saat menyalin.
+4. **Deploy → Manage deployments → ✏️ → Version: New version → Deploy**. URL `/exec` hanya memakai versi yang sudah di-deploy, jadi perubahan tidak muncul tanpa langkah ini.
+
 ## 2. Hubungkan AI (Claude)
 
 1. Buat API key di [console.anthropic.com](https://console.anthropic.com/settings/keys) (isi saldo; bayar per pemakaian).
+   Key yang benar diawali **`sk-ant-`** dan hanya ditampilkan sekali. Teks `apikey_…` di daftar key adalah ID, bukan key.
 2. Di aplikasi: **Pengaturan → AI** → tempel key → **Simpan** → **Tes koneksi**.
 3. Pilih model:
    - **Claude Opus 5.5** (default) — kualitas terbaik untuk modul ajar & soal.
