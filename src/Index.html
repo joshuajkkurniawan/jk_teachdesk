@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>JK TeachDesk</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <?!= include('Vendor') ?>
+  <?!= include('Styles') ?>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <div class="brand-logo">JK</div>
+        <div><b>TeachDesk</b><span>Super app guru</span></div>
+      </div>
+      <nav class="nav" id="nav">
+        <button data-view="dashboard"><span class="ic">🏠</span>Beranda</button>
+        <div class="nav-label">Data</div>
+        <button data-view="siswa"><span class="ic">👥</span>Siswa</button>
+        <button data-view="rombel"><span class="ic">🏫</span>Kelas &amp; Ekskul</button>
+        <div class="nav-label">Kelas harian</div>
+        <button data-view="presensi"><span class="ic">✅</span>Presensi &amp; Jurnal</button>
+        <button data-view="nilai"><span class="ic">📊</span>Penilaian</button>
+        <div class="nav-label">AI</div>
+        <button data-view="studio"><span class="ic">✨</span>AI Studio</button>
+        <button data-view="dokumen"><span class="ic">🗂️</span>Arsip Dokumen</button>
+        <div class="nav-label">Sistem</div>
+        <button data-view="pengaturan"><span class="ic">⚙️</span>Pengaturan</button>
+      </nav>
+      <div class="sidebar-foot" id="sidebarFoot">Memuat…</div>
+    </aside>
+    <div class="scrim" id="scrim"></div>
+    <div class="main">
+      <div class="topbar">
+        <button class="btn btn-ghost btn-icon" id="menuBtn" aria-label="Menu">☰</button>
+        <b>JK TeachDesk</b>
+      </div>
+      <main class="content" id="view">
+        <div class="loader"><div class="spin"></div>Menyiapkan aplikasi…</div>
+      </main>
+    </div>
+  </div>
+  <div class="toasts" id="toasts"></div>
+  <?!= include('App') ?>
+</body>
+</html>

@@ -1,0 +1,948 @@
+<script>
+/* =====================================================================
+ * App.html — seluruh logika front-end (vanilla JS, tanpa framework).
+ *
+ * Alur: go('nama_view') → VIEWS[nama_view](el) merender ke <main id="view">.
+ * Semua data diambil lewat call('aksi', payload) → fungsi api() di Code.gs.
+ * ===================================================================== */
+
+const S = {
+  boot: null,          // data awal: settings, rombel, kelas, katalog AI, dll.
+  view: 'dashboard',
+  params: {},
+  guard: null,         // fungsi async → false untuk membatalkan pindah halaman (mis. nilai belum disimpan)
+  studio: { tpl: null, result: null, mode: 'preview' },
+};
+
+// ---------------------------------------------------------------- utilitas
+const $ = (sel, el) => (el || document).querySelector(sel);
+const $$ = (sel, el) => Array.from((el || document).querySelectorAll(sel));
+const esc = (v) => String(v === null || v === undefined ? '' : v)
+  .replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const LOADER = '<div class="loader"><div class="spin"></div>Memuat…</div>';
+
+function call(action, payload) {
+  return new Promise((resolve, reject) => {
+    google.script.run
+      .withSuccessHandler((res) => (res && res.ok ? resolve(res.data) : reject(new Error(res ? res.error : 'Tidak ada respons dari server'))))
+      .withFailureHandler((err) => reject(err instanceof Error ? err : new Error((err && err.message) || String(err))))
+      .api(action, payload || {});
+  });
+}
+
+const store = {
+  get(k, d) { try { const v = localStorage.getItem('jktd.' + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem('jktd.' + k, JSON.stringify(v)); } catch (e) { /* mode privat */ } },
+};
+
+function toast(msg, type) {
+  const t = document.createElement('div');
+  t.className = 'toast ' + (type || '');
+  t.textContent = msg;
+  $('#toasts').appendChild(t);
+  setTimeout(() => t.remove(), type === 'err' ? 6000 : 3000);
+}
+const fail = (e) => toast(e.message || String(e), 'err');
+
+function fmtDate(iso) {
+  if (!iso) return '-';
+  const d = new Date(iso.length === 10 ? iso + 'T00:00:00' : iso);
+  if (isNaN(d)) return iso;
+  return d.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+const today = () => {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+};
+const mapelOptions = () => (S.boot.settings.mapelList || '').split(',').map((s) => s.trim()).filter(Boolean);
+
+function renderMd(md) {
+  if (window.marked && window.DOMPurify) return DOMPurify.sanitize(marked.parse(md || ''));
+  return '<pre style="white-space:pre-wrap">' + esc(md) + '</pre>';
+}
+
+function downloadFile(filename, content, mime) {
+  const blob = new Blob([content], { type: mime || 'text/plain;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+}
+function downloadCsv(filename, rows) {
+  const csv = rows.map((r) => r.map((c) => {
+    const s = String(c === null || c === undefined ? '' : c);
+    return /[",;\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }).join(',')).join('\n');
+  downloadFile(filename, '﻿' + csv, 'text/csv;charset=utf-8'); // BOM agar Excel membaca UTF-8
+}
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); toast('Disalin ke clipboard', 'ok'); }
+  catch (e) {
+    modal({ title: 'Salin manual', body: '<p class="muted">Browser memblokir clipboard. Tekan Ctrl+A lalu Ctrl+C:</p><textarea style="min-height:300px">' + esc(text) + '</textarea>', actions: [{ label: 'Tutup' }] });
+  }
+}
+
+// ---------------------------------------------------------------- modal & form
+function modal(opts) {
+  const back = document.createElement('div');
+  back.className = 'modal-back';
+  back.innerHTML = `
+    <div class="modal card ${opts.wide ? 'wide' : ''}" role="dialog" aria-modal="true">
+      <div class="card-head"><h2>${esc(opts.title)}</h2><button class="btn btn-ghost btn-icon" data-x aria-label="Tutup">✕</button></div>
+      <div class="modal-body">${opts.body || ''}</div>
+      ${opts.actions && opts.actions.length ? '<div class="modal-foot"></div>' : ''}
+    </div>`;
+  const close = () => { back.remove(); document.removeEventListener('keydown', onKey); if (opts.onClose) opts.onClose(); };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  document.addEventListener('keydown', onKey);
+  $('[data-x]', back).onclick = close;
+  back.addEventListener('mousedown', (e) => { if (e.target === back) close(); });
+  const foot = $('.modal-foot', back);
+  (opts.actions || []).forEach((a) => {
+    const b = document.createElement('button');
+    b.className = 'btn ' + (a.cls || '');
+    b.textContent = a.label;
+    b.onclick = async () => {
+      if (!a.onClick) return close();
+      b.disabled = true;
+      try { const keep = await a.onClick(close, back); if (keep !== true && document.body.contains(back) && a.autoClose !== false) close(); }
+      catch (e) { fail(e); }
+      finally { b.disabled = false; }
+    };
+    foot.appendChild(b);
+  });
+  document.body.appendChild(back);
+  const first = $('input, select, textarea', $('.modal-body', back));
+  if (first) setTimeout(() => first.focus(), 30);
+  return { el: back, close };
+}
+
+function confirmBox(message, okLabel) {
+  return new Promise((resolve) => {
+    let answered = false;
+    modal({
+      title: 'Konfirmasi', body: '<p>' + esc(message) + '</p>',
+      onClose: () => { if (!answered) resolve(false); },
+      actions: [
+        { label: 'Batal' },
+        { label: okLabel || 'Ya, lanjutkan', cls: 'btn-danger', onClick: () => { answered = true; resolve(true); } },
+      ],
+    });
+  });
+}
+
+/** Membuat input HTML dari definisi field. */
+function fieldHtml(f, value) {
+  const v = value !== undefined && value !== null && value !== '' ? value : (f.value || '');
+  const id = 'f_' + f.key;
+  let input;
+  if (f.type === 'select') {
+    input = `<select id="${id}" name="${f.key}">${(f.options || []).map((o) => {
+      const val = typeof o === 'object' ? o.value : o, lab = typeof o === 'object' ? o.label : o;
+      return `<option value="${esc(val)}" ${String(val) === String(v) ? 'selected' : ''}>${esc(lab)}</option>`;
+    }).join('')}</select>`;
+  } else if (f.type === 'textarea') {
+    input = `<textarea id="${id}" name="${f.key}" rows="${f.rows || 3}" placeholder="${esc(f.placeholder || '')}">${esc(v)}</textarea>`;
+  } else if (f.type === 'mapel') {
+    input = `<input id="${id}" name="${f.key}" list="dl_mapel" value="${esc(v)}" placeholder="Pilih / ketik mapel">
+      <datalist id="dl_mapel">${mapelOptions().map((m) => `<option value="${esc(m)}">`).join('')}</datalist>`;
+  } else if (f.type === 'rombel') {
+    input = rombelSelectHtml(id, v, true).replace('<select', `<select name="${f.key}"`);
+  } else {
+    input = `<input id="${id}" name="${f.key}" type="${f.type === 'number' ? 'number' : f.type === 'date' ? 'date' : f.type === 'password' ? 'password' : 'text'}"
+      value="${esc(v)}" placeholder="${esc(f.placeholder || '')}" ${f.type === 'number' ? 'step="any"' : ''}>`;
+  }
+  return `<label class="f ${f.full || f.type === 'textarea' ? 'full' : ''}" for="${id}">
+    <span>${esc(f.label)} ${f.required ? '<span class="req">*</span>' : ''}</span>${input}
+    ${f.help ? `<span class="small muted" style="font-weight:400">${esc(f.help)}</span>` : ''}</label>`;
+}
+
+function readForm(root, fields) {
+  const out = {};
+  fields.forEach((f) => { const el = $('[name="' + f.key + '"]', root); if (el) out[f.key] = el.value; });
+  return out;
+}
+
+function validate(fields, values) {
+  const miss = fields.filter((f) => f.required && !String(values[f.key] || '').trim());
+  if (miss.length) throw new Error('Wajib diisi: ' + miss.map((f) => f.label).join(', '));
+}
+
+/** Modal form generik. onSave(values) boleh async; modal tetap terbuka bila error. */
+function openForm(opts) {
+  return modal({
+    title: opts.title, wide: opts.wide,
+    body: (opts.intro || '') + `<form class="form-grid" onsubmit="return false">${opts.fields.map((f) => fieldHtml(f, (opts.values || {})[f.key])).join('')}</form>`,
+    actions: [
+      ...(opts.extraActions || []),
+      { label: 'Batal' },
+      {
+        label: opts.saveLabel || 'Simpan', cls: 'btn-primary',
+        onClick: async (close, el) => {
+          const values = readForm(el, opts.fields);
+          validate(opts.fields, values);
+          await opts.onSave(values);
+        },
+      },
+    ],
+  });
+}
+
+// ---------------------------------------------------------------- rombel helper
+function rombelSelectHtml(id, selected, allowEmpty) {
+  const groups = {};
+  S.boot.rombel.forEach((r) => { (groups[r.mapel || 'Lainnya'] = groups[r.mapel || 'Lainnya'] || []).push(r); });
+  return `<select id="${id}">${allowEmpty ? '<option value="">— Tidak spesifik —</option>' : ''}${Object.keys(groups).map((g) =>
+    `<optgroup label="${esc(g)}">${groups[g].map((r) => `<option value="${r.id}" ${r.id === selected ? 'selected' : ''}>${esc(r.nama)}</option>`).join('')}</optgroup>`).join('')}</select>`;
+}
+function currentRombel() {
+  const id = S.params.rombelId || store.get('rombel', '');
+  const ok = S.boot.rombel.some((r) => r.id === id);
+  return ok ? id : (S.boot.rombel[0] ? S.boot.rombel[0].id : '');
+}
+function noRombelHtml() {
+  return `<div class="card empty"><div class="big">🏫</div><p>Belum ada kelas/ekskul. Buat dulu rombel (mis. "X-1 Informatika" atau "Ekskul Band").</p>
+    <button class="btn btn-primary" onclick="go('rombel')">Buat Kelas &amp; Ekskul</button></div>`;
+}
+async function refreshRombel() { S.boot.rombel = await call('rombel.list'); }
+
+// ---------------------------------------------------------------- navigasi
+async function go(view, params) {
+  if (S.guard && !(await S.guard())) return;
+  S.guard = null;
+  S.view = view;
+  S.params = params || {};
+  $$('#nav button').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
+  $('#sidebar').classList.remove('open');
+  $('#scrim').classList.remove('show');
+  const el = $('#view');
+  el.innerHTML = LOADER;
+  window.scrollTo(0, 0);
+  try { await VIEWS[view](el); } catch (e) {
+    el.innerHTML = `<div class="card empty"><div class="big">⚠️</div><p>${esc(e.message)}</p><button class="btn" onclick="go('${view}')">Coba lagi</button></div>`;
+  }
+}
+
+// =====================================================================
+// VIEWS
+// =====================================================================
+const VIEWS = {};
+
+// ---------------------------------------------------------------- Beranda
+VIEWS.dashboard = async (el) => {
+  const d = await call('dashboard');
+  const s = S.boot.settings;
+  const h = new Date().getHours();
+  const salam = h < 11 ? 'Selamat pagi' : h < 15 ? 'Selamat siang' : h < 18 ? 'Selamat sore' : 'Selamat malam';
+  const setup = [
+    { done: !!s.namaGuru && !!s.sekolah, label: 'Lengkapi profil guru & sekolah', view: 'pengaturan' },
+    { done: s.hasApiKey, label: 'Hubungkan API key Claude untuk AI Studio', view: 'pengaturan' },
+    { done: d.stat.siswa > 0, label: 'Tambahkan / impor data siswa', view: 'siswa' },
+    { done: d.stat.rombel > 0, label: 'Buat kelas mapel & ekskul', view: 'rombel' },
+  ];
+  const pending = setup.filter((x) => !x.done);
+  el.innerHTML = `
+    <div class="page-head"><div><h1>${salam}${s.namaGuru ? ', ' + esc(s.namaGuru.split(' ')[0]) : ''} 👋</h1>
+      <p>${new Date().toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })} · TA ${esc(s.tahunAjaran)} · Semester ${esc(s.semester)}</p></div></div>
+    ${pending.length ? `<div class="card card-pad" style="margin-bottom:16px">
+      <h2>🚀 Langkah awal (${setup.length - pending.length}/${setup.length})</h2>
+      <div class="stack" style="margin-top:12px">${setup.map((x) => `<div class="row">${x.done ? '✅' : '⬜'} <span class="${x.done ? 'muted' : ''}">${esc(x.label)}</span>
+        ${x.done ? '' : `<button class="btn btn-sm" onclick="go('${x.view}')">Buka</button>`}</div>`).join('')}</div></div>` : ''}
+    <div class="grid grid-stats" style="margin-bottom:16px">
+      ${[['👥', d.stat.siswa, 'Siswa aktif'], ['🏫', d.stat.rombel, 'Kelas & ekskul'], ['🗓️', d.stat.pertemuan, 'Pertemuan tercatat'],
+        ['📊', d.stat.asesmen, 'Asesmen'], ['🗂️', d.stat.dokumen, 'Dokumen AI']]
+        .map((x) => `<div class="card stat"><div class="l">${x[0]} ${x[2]}</div><div class="v">${x[1]}</div></div>`).join('')}
+    </div>
+    <div class="card card-pad" style="margin-bottom:16px">
+      <h2>Aksi cepat</h2>
+      <div class="row" style="margin-top:12px">
+        <button class="btn btn-primary" onclick="go('presensi', {baru: true})">✅ Isi presensi hari ini</button>
+        <button class="btn" onclick="go('nilai')">📊 Input nilai</button>
+        <button class="btn" onclick="openTemplate('modul_ajar')">📘 Buat modul ajar</button>
+        <button class="btn" onclick="openTemplate('soal')">❓ Buat soal</button>
+        <button class="btn" onclick="openTemplate('latihan_band')">🥁 Rencana latihan band</button>
+      </div>
+    </div>
+    <div class="grid grid-2">
+      <div class="card"><div class="card-head"><h2>📓 Jurnal terakhir</h2><button class="btn btn-sm" onclick="go('presensi')">Semua</button></div>
+        ${d.jurnalTerakhir.length ? d.jurnalTerakhir.map((j) => `<div class="list-item"><div style="flex:1"><b>${esc(j.rombel)}</b>
+          <div class="small muted">${fmtDate(j.tanggal)} · ${esc(j.materi || 'tanpa catatan materi')}</div></div></div>`).join('')
+          : '<div class="empty small">Belum ada pertemuan tercatat.</div>'}</div>
+      <div class="card"><div class="card-head"><h2>⚠️ Perlu perhatian</h2><span class="small muted">Alpa ≥ 3×</span></div>
+        ${d.perhatian.length ? d.perhatian.map((p) => `<div class="list-item"><div style="flex:1"><b>${esc(p.nama)}</b><div class="small muted">${esc(p.kelas)}</div></div>
+          <span class="badge badge-danger">${p.alpa}× alpa</span></div>`).join('') : '<div class="empty small">Semua aman 🎉</div>'}</div>
+      <div class="card"><div class="card-head"><h2>🗂️ Dokumen terbaru</h2><button class="btn btn-sm" onclick="go('dokumen')">Arsip</button></div>
+        ${d.dokumenTerbaru.length ? d.dokumenTerbaru.map((x) => `<div class="list-item"><div style="flex:1"><b>${esc(x.judul)}</b>
+          <div class="small muted">${fmtDate(x.dibuat)}</div></div><button class="btn btn-sm" onclick="openDokumen('${x.id}')">Buka</button></div>`).join('')
+          : '<div class="empty small">Belum ada dokumen. Coba AI Studio ✨</div>'}</div>
+    </div>`;
+};
+
+// ---------------------------------------------------------------- Siswa
+const SISWA_FIELDS = [
+  { key: 'nama', label: 'Nama lengkap', required: true, full: true },
+  { key: 'nis', label: 'NIS' },
+  { key: 'nisn', label: 'NISN' },
+  { key: 'jk', label: 'Jenis kelamin', type: 'select', options: [{ value: '', label: '-' }, { value: 'L', label: 'Laki-laki' }, { value: 'P', label: 'Perempuan' }] },
+  { key: 'kelas', label: 'Kelas', required: true, placeholder: 'mis. X-1' },
+  { key: 'tglLahir', label: 'Tanggal lahir', type: 'date' },
+  { key: 'aktif', label: 'Status', type: 'select', options: [{ value: 'true', label: 'Aktif' }, { value: 'false', label: 'Nonaktif / mutasi' }] },
+  { key: 'namaOrtu', label: 'Nama orang tua/wali' },
+  { key: 'hpOrtu', label: 'No. HP orang tua' },
+  { key: 'catatan', label: 'Catatan', type: 'textarea' },
+];
+
+VIEWS.siswa = async (el) => {
+  let list = await call('siswa.list');
+  const f = store.get('siswaFilter', { kelas: '', q: '' });
+  const render = () => {
+    const kelas = [...new Set(list.map((s) => s.kelas).filter(Boolean))].sort();
+    const q = f.q.toLowerCase();
+    const shown = list.filter((s) => (!f.kelas || s.kelas === f.kelas) && (!q || (s.nama + ' ' + s.nis + ' ' + s.nisn).toLowerCase().includes(q)));
+    el.innerHTML = `
+      <div class="page-head"><div><h1>Siswa</h1><p>${list.length} siswa terdaftar · ${kelas.length} kelas</p></div>
+        <div class="row"><button class="btn" id="btnImport">📥 Impor dari Excel</button><button class="btn" id="btnCsv">⬇️ CSV</button>
+        <button class="btn btn-primary" id="btnAdd">+ Tambah siswa</button></div></div>
+      <div class="toolbar">
+        <select id="fKelas"><option value="">Semua kelas</option>${kelas.map((k) => `<option ${k === f.kelas ? 'selected' : ''}>${esc(k)}</option>`).join('')}</select>
+        <input id="fQ" placeholder="🔎 Cari nama / NIS…" value="${esc(f.q)}">
+        <span class="muted small">${shown.length} ditampilkan</span>
+      </div>
+      <div class="card table-wrap">
+        ${shown.length ? `<table class="t"><thead><tr><th>#</th><th>Nama</th><th>NIS / NISN</th><th>L/P</th><th>Kelas</th><th>Orang tua</th><th>Status</th><th></th></tr></thead><tbody>
+          ${shown.map((s, i) => `<tr><td class="muted">${i + 1}</td><td><b>${esc(s.nama)}</b></td><td>${esc(s.nis || '-')}<div class="small muted">${esc(s.nisn)}</div></td>
+            <td>${esc(s.jk || '-')}</td><td><span class="badge badge-primary">${esc(s.kelas || '-')}</span></td>
+            <td>${esc(s.namaOrtu || '-')}<div class="small muted">${esc(s.hpOrtu)}</div></td>
+            <td>${s.aktif === 'false' ? '<span class="badge badge-warn">Nonaktif</span>' : '<span class="badge badge-ok">Aktif</span>'}</td>
+            <td class="num"><button class="btn btn-sm" data-edit="${s.id}">Ubah</button> <button class="btn btn-sm btn-danger" data-del="${s.id}">Hapus</button></td></tr>`).join('')}
+          </tbody></table>` : `<div class="empty"><div class="big">👥</div><p>Belum ada siswa${f.kelas || f.q ? ' yang cocok dengan filter' : ''}.</p></div>`}
+      </div>`;
+    $('#fKelas').onchange = (e) => { f.kelas = e.target.value; store.set('siswaFilter', f); render(); };
+    $('#fQ').oninput = (e) => { f.q = e.target.value; store.set('siswaFilter', f); clearTimeout(render.t); render.t = setTimeout(() => { render(); const i = $('#fQ'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }, 250); };
+    $('#btnAdd').onclick = () => edit({ kelas: f.kelas, aktif: 'true' });
+    $('#btnImport').onclick = () => importSiswa(f.kelas, reload);
+    $('#btnCsv').onclick = () => downloadCsv('siswa' + (f.kelas ? '-' + f.kelas : '') + '.csv',
+      [['NIS', 'NISN', 'Nama', 'L/P', 'Kelas', 'Tgl Lahir', 'Orang Tua', 'HP Ortu', 'Status']]
+        .concat(shown.map((s) => [s.nis, s.nisn, s.nama, s.jk, s.kelas, s.tglLahir, s.namaOrtu, s.hpOrtu, s.aktif === 'false' ? 'Nonaktif' : 'Aktif'])));
+    $$('[data-edit]', el).forEach((b) => { b.onclick = () => edit(list.find((s) => s.id === b.dataset.edit)); });
+    $$('[data-del]', el).forEach((b) => {
+      b.onclick = async () => {
+        const s = list.find((x) => x.id === b.dataset.del);
+        if (!(await confirmBox(`Hapus ${s.nama}? Semua nilai & presensinya ikut terhapus.`, 'Hapus'))) return;
+        try { await call('siswa.delete', { id: s.id }); toast('Siswa dihapus', 'ok'); reload(); } catch (e) { fail(e); }
+      };
+    });
+  };
+  const reload = async () => { list = await call('siswa.list'); S.boot.kelas = await call('kelas.list'); render(); };
+  const edit = (s) => openForm({
+    title: s.id ? 'Ubah siswa' : 'Tambah siswa', fields: SISWA_FIELDS, values: s,
+    onSave: async (v) => { await call('siswa.save', Object.assign({ id: s.id }, v)); toast('Tersimpan', 'ok'); reload(); },
+  });
+  render();
+};
+
+function importSiswa(defaultKelas, done) {
+  modal({
+    title: 'Impor siswa dari Excel / Google Sheets', wide: true,
+    body: `<div class="stack">
+      <p class="muted" style="margin:0">Salin (Ctrl+C) tabel dari Excel/Sheets lalu tempel (Ctrl+V) di bawah. Baris pertama boleh berupa judul kolom:
+      <b>NIS, NISN, Nama, JK, Kelas</b> (urutan bebas jika ada judul; tanpa judul gunakan urutan tersebut). Siswa dengan NIS yang sudah ada akan diperbarui.</p>
+      <label class="f">Kelas default (dipakai jika kolom kelas kosong)<input id="impKelas" value="${esc(defaultKelas || '')}" placeholder="mis. X-1"></label>
+      <textarea id="impText" style="min-height:220px;font-family:monospace" placeholder="NIS&#9;NISN&#9;Nama&#9;JK&#9;Kelas&#10;2401&#9;0091234567&#9;Andi Pratama&#9;L&#9;X-1"></textarea>
+      <div id="impPrev" class="small muted"></div></div>`,
+    actions: [{ label: 'Batal' }, {
+      label: 'Impor', cls: 'btn-primary', onClick: async (close, el) => {
+        const rows = parsePaste($('#impText', el).value);
+        if (!rows.length) throw new Error('Tidak ada baris yang berisi nama.');
+        const r = await call('siswa.import', { rows, kelas: $('#impKelas', el).value });
+        toast(`Impor selesai: ${r.baru} baru, ${r.update} diperbarui`, 'ok');
+        done();
+      },
+    }],
+  });
+  const ta = $('#impText');
+  ta.oninput = () => {
+    const rows = parsePaste(ta.value);
+    $('#impPrev').innerHTML = rows.length ? `Terbaca <b>${rows.length}</b> siswa. Contoh: ${rows.slice(0, 3).map((r) => esc(r.nama + (r.kelas ? ' (' + r.kelas + ')' : ''))).join(', ')}` : '';
+  };
+}
+
+function parsePaste(text) {
+  const lines = text.replace(/\r/g, '').split('\n').filter((l) => l.trim());
+  if (!lines.length) return [];
+  const sep = lines[0].includes('\t') ? '\t' : lines[0].includes(';') ? ';' : ',';
+  const split = (l) => l.split(sep).map((c) => c.trim().replace(/^"|"$/g, ''));
+  let cols = ['nis', 'nisn', 'nama', 'jk', 'kelas'];
+  const head = split(lines[0]).map((h) => h.toLowerCase());
+  if (head.some((h) => h.includes('nama'))) {
+    cols = head.map((h) => (h.includes('nisn') ? 'nisn' : h.includes('nis') || h.includes('induk') ? 'nis'
+      : h.includes('ortu') || h.includes('orang tua') || h.includes('wali') ? (h.includes('hp') || h.includes('telp') ? 'hpOrtu' : 'namaOrtu')
+      : h.includes('nama') ? 'nama' : h === 'jk' || h.includes('kelamin') || h === 'l/p' ? 'jk' : h.includes('kelas') || h.includes('rombel') ? 'kelas'
+      : h.includes('lahir') ? 'tglLahir' : h.includes('hp') || h.includes('telp') ? 'hpOrtu' : ''));
+    lines.shift();
+  }
+  return lines.map((l) => { const c = split(l), o = {}; cols.forEach((k, i) => { if (k) o[k] = c[i] || ''; }); return o; })
+    .filter((o) => o.nama);
+}
+
+// ---------------------------------------------------------------- Kelas & Ekskul
+VIEWS.rombel = async (el) => {
+  await refreshRombel();
+  const list = S.boot.rombel;
+  el.innerHTML = `
+    <div class="page-head"><div><h1>Kelas &amp; Ekskul</h1><p>Rombongan belajar yang Anda ampu: kelas mapel (anggota otomatis dari data kelas) atau ekskul (anggota dipilih manual).</p></div>
+      <button class="btn btn-primary" id="btnAdd">+ Tambah</button></div>
+    ${list.length ? `<div class="grid grid-cards">${list.map((r) => `
+      <div class="card card-pad stack">
+        <div class="row"><h2 style="flex:1">${esc(r.nama)}</h2><span class="badge ${r.tipe === 'Ekskul' ? 'badge-warn' : 'badge-primary'}">${esc(r.tipe)}</span></div>
+        <div class="small muted">${esc(r.mapel || '-')} · ${r.kelas ? 'Kelas ' + esc(r.kelas) : 'Anggota manual'} · <b>${r.jumlahSiswa}</b> siswa
+          ${r.jadwal ? '<br>🕑 ' + esc(r.jadwal) : ''}${r.kktp ? '<br>KKTP ' + esc(r.kktp) : ''}</div>
+        <div class="row">
+          <button class="btn btn-sm" onclick="go('presensi',{rombelId:'${r.id}'})">✅ Presensi</button>
+          <button class="btn btn-sm" onclick="go('nilai',{rombelId:'${r.id}'})">📊 Nilai</button>
+          ${r.kelas ? '' : `<button class="btn btn-sm" data-member="${r.id}">👥 Anggota</button>`}
+          <span class="spacer"></span>
+          <button class="btn btn-sm btn-ghost" data-edit="${r.id}">Ubah</button>
+          <button class="btn btn-sm btn-ghost btn-danger" data-del="${r.id}">Hapus</button>
+        </div>
+      </div>`).join('')}</div>` : `<div class="card empty"><div class="big">🏫</div><p>Contoh: <b>X-1 Informatika</b> (mapel, kelas X-1), <b>XI-2 Bahasa Inggris</b>, atau <b>Ekskul Band</b> (ekskul, anggota manual).</p></div>`}`;
+  const edit = (r) => {
+    const kelasOpts = [{ value: '', label: '— Anggota dipilih manual (ekskul / lintas kelas) —' }].concat(S.boot.kelas.map((k) => ({ value: k, label: 'Kelas ' + k })));
+    if (r.kelas && !S.boot.kelas.includes(r.kelas)) kelasOpts.push({ value: r.kelas, label: 'Kelas ' + r.kelas });
+    openForm({
+      title: r.id ? 'Ubah rombel' : 'Tambah kelas / ekskul',
+      fields: [
+        { key: 'nama', label: 'Nama', required: true, placeholder: 'mis. X-1 Informatika / Ekskul Band', full: true },
+        { key: 'tipe', label: 'Tipe', type: 'select', options: ['Mapel', 'Ekskul'] },
+        { key: 'mapel', label: 'Mata pelajaran / kegiatan', type: 'mapel', required: true },
+        { key: 'kelas', label: 'Sumber anggota', type: 'select', options: kelasOpts, full: true, help: S.boot.kelas.length ? '' : 'Belum ada data kelas — tambahkan siswa dulu agar kelas muncul di sini.' },
+        { key: 'tahunAjaran', label: 'Tahun ajaran', value: S.boot.settings.tahunAjaran },
+        { key: 'semester', label: 'Semester', type: 'select', options: ['Ganjil', 'Genap'], value: S.boot.settings.semester },
+        { key: 'kktp', label: 'KKTP / batas tuntas', type: 'number', placeholder: S.boot.settings.kktpDefault },
+        { key: 'jadwal', label: 'Jadwal', placeholder: 'mis. Senin jam 3–4' },
+        { key: 'catatan', label: 'Catatan', type: 'textarea' },
+      ],
+      values: r,
+      onSave: async (v) => { await call('rombel.save', Object.assign({ id: r.id }, v)); toast('Tersimpan', 'ok'); go('rombel'); },
+    });
+  };
+  $('#btnAdd').onclick = () => edit({});
+  $$('[data-edit]', el).forEach((b) => { b.onclick = () => edit(list.find((r) => r.id === b.dataset.edit)); });
+  $$('[data-member]', el).forEach((b) => { b.onclick = () => kelolaAnggota(b.dataset.member); });
+  $$('[data-del]', el).forEach((b) => {
+    b.onclick = async () => {
+      const r = list.find((x) => x.id === b.dataset.del);
+      if (!(await confirmBox(`Hapus "${r.nama}"? Semua asesmen, nilai, jurnal & presensinya ikut terhapus. Data siswa tetap aman.`, 'Hapus'))) return;
+      try { await call('rombel.delete', { id: r.id }); toast('Dihapus', 'ok'); go('rombel'); } catch (e) { fail(e); }
+    };
+  });
+};
+
+async function kelolaAnggota(rombelId) {
+  const [semua, cur] = await Promise.all([call('siswa.list'), call('rombel.members', { rombelId })]).catch((e) => { fail(e); return []; });
+  if (!semua) return;
+  const picked = new Set(cur.siswa.map((s) => s.id));
+  const kelas = [...new Set(semua.map((s) => s.kelas).filter(Boolean))].sort();
+  const m = modal({
+    title: 'Anggota ' + cur.rombel.nama, wide: true,
+    body: `<div class="toolbar"><select id="mKelas"><option value="">Semua kelas</option>${kelas.map((k) => `<option>${esc(k)}</option>`).join('')}</select>
+      <input id="mQ" placeholder="🔎 Cari nama…"><button class="btn btn-sm" id="mAll">Pilih semua yang tampil</button><span class="small muted" id="mCount"></span></div>
+      <div class="check-list" id="mList"></div>`,
+    actions: [{ label: 'Batal' }, {
+      label: 'Simpan anggota', cls: 'btn-primary', onClick: async () => {
+        const n = await call('rombel.setMembers', { rombelId, siswaIds: [...picked] });
+        toast(`${n} anggota tersimpan`, 'ok'); go('rombel');
+      },
+    }],
+  });
+  const draw = () => {
+    const k = $('#mKelas', m.el).value, q = $('#mQ', m.el).value.toLowerCase();
+    const shown = semua.filter((s) => s.aktif !== 'false' && (!k || s.kelas === k) && (!q || s.nama.toLowerCase().includes(q)));
+    $('#mList', m.el).innerHTML = shown.map((s) => `<label><input type="checkbox" value="${s.id}" ${picked.has(s.id) ? 'checked' : ''}>
+      <span style="flex:1">${esc(s.nama)}</span><span class="badge">${esc(s.kelas)}</span></label>`).join('') || '<div class="empty small">Tidak ada siswa.</div>';
+    $('#mCount', m.el).textContent = picked.size + ' dipilih';
+    $$('#mList input', m.el).forEach((c) => { c.onchange = () => { c.checked ? picked.add(c.value) : picked.delete(c.value); $('#mCount', m.el).textContent = picked.size + ' dipilih'; }; });
+    $('#mAll', m.el).onclick = () => { shown.forEach((s) => picked.add(s.id)); draw(); };
+  };
+  $('#mKelas', m.el).onchange = draw;
+  $('#mQ', m.el).oninput = draw;
+  draw();
+}
+
+// ---------------------------------------------------------------- Penilaian
+VIEWS.nilai = async (el) => {
+  if (!S.boot.rombel.length) { el.innerHTML = noRombelHtml(); return; }
+  const rombelId = currentRombel();
+  store.set('rombel', rombelId);
+  const gb = await call('nilai.gradebook', { rombelId });
+  const orig = {}, dirty = {};
+  gb.asesmen.forEach((a) => gb.siswa.forEach((s) => { orig[a.id + '|' + s.id] = ((gb.nilai[s.id] || {})[a.id]) || ''; }));
+
+  const hitung = (siswaId) => {
+    let total = 0, bobot = 0;
+    gb.asesmen.forEach((a) => {
+      const key = a.id + '|' + siswaId;
+      const v = key in dirty ? dirty[key] : orig[key];
+      const b = parseFloat(a.bobot) || 1, mx = parseFloat(a.maks) || 100;
+      if (v === '' || v === undefined || isNaN(Number(v)) || Number(v) < 0 || Number(v) > mx) return;
+      total += parseFloat(v) / mx * 100 * b; bobot += b;
+    });
+    return bobot ? Math.round(total / bobot * 10) / 10 : null;
+  };
+  const akhirHtml = (v) => v === null ? '<span class="muted">-</span>'
+    : `<b>${v}</b> <span class="badge ${v >= gb.kktp ? 'badge-ok' : 'badge-danger'}">${v >= gb.kktp ? 'Tuntas' : 'Belum'}</span>`;
+
+  el.innerHTML = `
+    <div class="page-head"><div><h1>Penilaian</h1><p>Nilai akhir = rata-rata berbobot (nilai ÷ maks × 100 × bobot). KKTP: <b>${gb.kktp}</b>. Klik judul kolom untuk mengubah asesmen.</p></div></div>
+    <div class="toolbar">${rombelSelectHtml('selRombel', rombelId)}
+      <button class="btn" id="btnAsm">+ Asesmen</button>
+      <button class="btn btn-primary" id="btnSave" disabled>💾 Simpan</button>
+      <span class="spacer"></span>
+      <button class="btn" id="btnCsv">⬇️ CSV</button>
+      <button class="btn" id="btnRapor">✨ Deskripsi rapor (AI)</button>
+    </div>
+    ${!gb.siswa.length ? `<div class="card empty"><p>Rombel ini belum memiliki siswa.</p></div>`
+      : !gb.asesmen.length ? `<div class="card empty"><div class="big">📊</div><p>Belum ada asesmen. Tambahkan tugas, kuis, ulangan, praktik, dst.</p></div>`
+      : `<div class="card table-wrap gradebook"><table class="t"><thead><tr><th class="sticky-col">Nama siswa</th>
+        ${gb.asesmen.map((a) => `<th class="asm center" data-asm="${a.id}" title="Klik untuk ubah">${esc(a.judul)}<small>${esc(a.jenis)} · b${esc(a.bobot)}${a.maks !== '100' ? ' · /' + esc(a.maks) : ''}${a.tanggal ? ' · ' + fmtDate(a.tanggal) : ''}</small></th>`).join('')}
+        <th class="num">Nilai akhir</th></tr></thead><tbody>
+        ${gb.siswa.map((s, ri) => `<tr><td class="sticky-col"><b>${esc(s.nama)}</b><div class="small muted">${esc(s.nis || s.kelas)}</div></td>
+          ${gb.asesmen.map((a, ci) => { const v = orig[a.id + '|' + s.id]; const low = v !== '' && parseFloat(v) / (parseFloat(a.maks) || 100) * 100 < gb.kktp;
+            return `<td class="center"><input class="score ${low ? 'low' : ''}" inputmode="decimal" data-a="${a.id}" data-s="${s.id}" data-r="${ri}" data-c="${ci}" value="${esc(v)}"></td>`; }).join('')}
+          <td class="num" data-akhir="${s.id}">${akhirHtml(hitung(s.id))}</td></tr>`).join('')}
+        </tbody></table></div>`}`;
+
+  const btnSave = $('#btnSave');
+  const updateSave = () => { const n = Object.keys(dirty).length; btnSave.disabled = !n; btnSave.textContent = n ? `💾 Simpan (${n})` : '💾 Simpan'; };
+  S.guard = async () => !Object.keys(dirty).length || confirmBox('Ada nilai yang belum disimpan. Tinggalkan halaman?', 'Tinggalkan');
+
+  $$('input.score', el).forEach((inp) => {
+    inp.oninput = () => {
+      const key = inp.dataset.a + '|' + inp.dataset.s;
+      const v = inp.value.trim().replace(',', '.');
+      if (v === orig[key]) delete dirty[key]; else dirty[key] = v;
+      inp.classList.toggle('dirty', key in dirty);
+      const a = gb.asesmen.find((x) => x.id === inp.dataset.a);
+      const mx = parseFloat(a.maks) || 100;
+      const bad = v !== '' && (isNaN(Number(v)) || Number(v) < 0 || Number(v) > mx);
+      inp.classList.toggle('bad', bad);
+      inp.title = bad ? `Nilai harus 0–${mx}` : '';
+      inp.classList.toggle('low', !bad && v !== '' && Number(v) / mx * 100 < gb.kktp);
+      $(`[data-akhir="${inp.dataset.s}"]`, el).innerHTML = akhirHtml(hitung(inp.dataset.s));
+      updateSave();
+    };
+    inp.onkeydown = (e) => {
+      const r = +inp.dataset.r, c = +inp.dataset.c;
+      const move = { Enter: [1, 0], ArrowDown: [1, 0], ArrowUp: [-1, 0] }[e.key];
+      if (!move) return;
+      e.preventDefault();
+      const next = $(`input.score[data-r="${r + move[0]}"][data-c="${c + move[1]}"]`, el);
+      if (next) { next.focus(); next.select(); }
+    };
+    inp.onfocus = () => inp.select();
+  });
+
+  $('#selRombel').onchange = (e) => go('nilai', { rombelId: e.target.value });
+  btnSave.onclick = async () => {
+    const bad = $('input.score.bad', el);
+    if (bad) { bad.focus(); return fail(new Error('Perbaiki nilai yang ditandai merah: ' + bad.title)); }
+    btnSave.disabled = true;
+    try {
+      const entries = Object.keys(dirty).map((k) => { const [asesmenId, siswaId] = k.split('|'); return { asesmenId, siswaId, nilai: dirty[k] }; });
+      const r = await call('nilai.saveBulk', { entries });
+      toast(`${r.tersimpan + r.dihapus} nilai tersimpan`, 'ok');
+      Object.keys(dirty).forEach((k) => { orig[k] = dirty[k]; delete dirty[k]; });
+      $$('input.score.dirty', el).forEach((i) => i.classList.remove('dirty'));
+    } catch (e) { fail(e); }
+    updateSave();
+  };
+  const editAsm = (a) => openForm({
+    title: a.id ? 'Ubah asesmen' : 'Tambah asesmen',
+    fields: [
+      { key: 'judul', label: 'Judul', required: true, placeholder: 'mis. Tugas 1 — Algoritma', full: true },
+      { key: 'jenis', label: 'Jenis', type: 'select', options: gb.jenis },
+      { key: 'tanggal', label: 'Tanggal', type: 'date', value: today() },
+      { key: 'bobot', label: 'Bobot', type: 'number', value: '1', help: 'mis. Tugas 1, UH 2, SAS 3' },
+      { key: 'maks', label: 'Skor maksimal', type: 'number', value: '100' },
+      { key: 'tp', label: 'Tujuan pembelajaran (TP) yang diukur', full: true, placeholder: 'mis. TP 10.2 — menerapkan percabangan', help: 'Dipakai AI saat menyusun deskripsi rapor.' },
+      { key: 'catatan', label: 'Catatan', type: 'textarea' },
+    ],
+    values: a,
+    extraActions: a.id ? [{
+      label: 'Hapus', cls: 'btn-danger', onClick: async (close) => {
+        close();
+        if (!(await confirmBox(`Hapus asesmen "${a.judul}" beserta seluruh nilainya?`, 'Hapus'))) return;
+        await call('asesmen.delete', { id: a.id }); toast('Asesmen dihapus', 'ok'); S.guard = null; go('nilai', { rombelId });
+      },
+    }] : [],
+    onSave: async (v) => {
+      await call('asesmen.save', Object.assign({ id: a.id, rombelId }, v));
+      toast('Asesmen tersimpan', 'ok');
+      if (!(await S.guard())) return;
+      S.guard = null; go('nilai', { rombelId });
+    },
+  });
+  $('#btnAsm').onclick = () => editAsm({});
+  $$('[data-asm]', el).forEach((th) => { th.onclick = () => editAsm(gb.asesmen.find((a) => a.id === th.dataset.asm)); });
+  $('#btnCsv').onclick = () => downloadCsv(`nilai-${gb.rombel.nama}.csv`,
+    [['No', 'NIS', 'Nama'].concat(gb.asesmen.map((a) => a.judul), ['Nilai Akhir', 'Keterangan'])]
+      .concat(gb.siswa.map((s, i) => { const ak = hitung(s.id); return [i + 1, s.nis, s.nama].concat(gb.asesmen.map((a) => { const k = a.id + '|' + s.id; return k in dirty ? dirty[k] : orig[k]; }), [ak === null ? '' : ak, ak === null ? '' : ak >= gb.kktp ? 'Tuntas' : 'Belum tuntas']); })));
+  $('#btnRapor').onclick = () => deskripsiRapor(gb);
+};
+
+async function deskripsiRapor(gb) {
+  if (!S.boot.settings.hasApiKey) { toast('Atur API key Claude di Pengaturan dulu.', 'err'); return; }
+  const m = modal({
+    title: '✨ Deskripsi capaian rapor — ' + gb.rombel.nama, wide: true,
+    body: `<div class="stack"><p class="muted" style="margin:0">AI menyusun deskripsi per siswa dari nilai &amp; TP tiap asesmen. Simpan nilai terlebih dahulu agar data terbaru dipakai.</p>
+      <label class="f">Catatan untuk AI (opsional)<input id="rCat" placeholder="mis. tekankan praktik pemrograman"></label>
+      <div id="rOut"></div></div>`,
+    actions: [{ label: 'Tutup' }, {
+      label: 'Buat deskripsi', cls: 'btn-primary', autoClose: false, onClick: async (close, el) => {
+        const out = $('#rOut', el);
+        out.innerHTML = '<div class="ai-wait"><div class="spin"></div>AI sedang menganalisis nilai… (±30–90 detik)</div>';
+        try {
+          const rows = await call('ai.deskripsiRapor', { rombelId: gb.rombel.id, catatan: $('#rCat', el).value });
+          out.innerHTML = `<div class="row" style="margin-bottom:8px"><button class="btn btn-sm" id="rCsv">⬇️ CSV</button><button class="btn btn-sm" id="rCopy">📋 Salin</button></div>
+            <div class="table-wrap"><table class="t"><thead><tr><th>Nama</th><th class="num">Akhir</th><th>Deskripsi</th></tr></thead><tbody>
+            ${rows.map((r) => `<tr><td><b>${esc(r.nama)}</b></td><td class="num">${r.akhir === null ? '-' : r.akhir}</td><td><textarea data-id="${r.siswaId}" rows="3">${esc(r.deskripsi)}</textarea></td></tr>`).join('')}</tbody></table></div>`;
+          const collect = () => rows.map((r) => [r.nis, r.nama, r.akhir === null ? '' : r.akhir, $(`textarea[data-id="${r.siswaId}"]`, el).value]);
+          $('#rCsv', el).onclick = () => downloadCsv(`deskripsi-rapor-${gb.rombel.nama}.csv`, [['NIS', 'Nama', 'Nilai Akhir', 'Deskripsi']].concat(collect()));
+          $('#rCopy', el).onclick = () => copyText(collect().map((r) => r.join('\t')).join('\n'));
+        } catch (e) { out.innerHTML = ''; throw e; }
+      },
+    }],
+  });
+  return m;
+}
+
+// ---------------------------------------------------------------- Presensi & Jurnal
+VIEWS.presensi = async (el) => {
+  if (!S.boot.rombel.length) { el.innerHTML = noRombelHtml(); return; }
+  const rombelId = currentRombel();
+  store.set('rombel', rombelId);
+  if (S.params.baru || S.params.pertemuanId) return presensiForm(el, rombelId, S.params.pertemuanId);
+  const tab = S.params.tab || 'jurnal';
+  el.innerHTML = `
+    <div class="page-head"><div><h1>Presensi &amp; Jurnal</h1><p>Setiap pertemuan mencatat materi (jurnal mengajar) sekaligus kehadiran siswa.</p></div>
+      <button class="btn btn-primary" id="btnNew">+ Pertemuan baru</button></div>
+    <div class="toolbar">${rombelSelectHtml('selRombel', rombelId)}</div>
+    <div class="tabs"><button data-tab="jurnal" class="${tab === 'jurnal' ? 'active' : ''}">📓 Jurnal &amp; presensi</button><button data-tab="rekap" class="${tab === 'rekap' ? 'active' : ''}">📈 Rekap kehadiran</button></div>
+    <div id="tabBody">${LOADER}</div>`;
+  $('#selRombel').onchange = (e) => go('presensi', { rombelId: e.target.value, tab });
+  $('#btnNew').onclick = () => go('presensi', { rombelId, baru: true });
+  $$('[data-tab]', el).forEach((b) => { b.onclick = () => go('presensi', { rombelId, tab: b.dataset.tab }); });
+  const body = $('#tabBody');
+
+  if (tab === 'jurnal') {
+    const d = await call('presensi.list', { rombelId });
+    body.innerHTML = d.pertemuan.length ? `<div class="card table-wrap"><table class="t"><thead><tr><th>Ke-</th><th>Tanggal</th><th>Materi / kegiatan</th><th>Kehadiran</th><th></th></tr></thead><tbody>
+      ${d.pertemuan.map((p) => `<tr><td>${esc(p.pertemuanKe)}</td><td>${fmtDate(p.tanggal)}</td><td>${esc(p.materi || '-')}${p.catatan ? `<div class="small muted">${esc(p.catatan)}</div>` : ''}</td>
+        <td><div class="row">${Object.keys(p.ringkasan).filter((k) => p.ringkasan[k]).map((k) => `<span class="badge ${k === 'H' ? 'badge-ok' : k === 'A' ? 'badge-danger' : k === 'T' ? 'badge-info' : 'badge-warn'}">${k} ${p.ringkasan[k]}</span>`).join('')}</div></td>
+        <td class="num"><button class="btn btn-sm" data-open="${p.id}">Buka</button> <button class="btn btn-sm btn-danger" data-del="${p.id}">Hapus</button></td></tr>`).join('')}
+      </tbody></table></div>
+      <div class="row" style="margin-top:12px"><button class="btn" id="btnJurnalCsv">⬇️ Ekspor jurnal (CSV)</button></div>`
+      : '<div class="card empty"><div class="big">📓</div><p>Belum ada pertemuan. Klik "+ Pertemuan baru" saat mulai mengajar.</p></div>';
+    $$('[data-open]', body).forEach((b) => { b.onclick = () => go('presensi', { rombelId, pertemuanId: b.dataset.open }); });
+    $$('[data-del]', body).forEach((b) => {
+      b.onclick = async () => {
+        if (!(await confirmBox('Hapus pertemuan ini beserta data presensinya?', 'Hapus'))) return;
+        try { await call('presensi.delete', { id: b.dataset.del }); toast('Dihapus', 'ok'); go('presensi', { rombelId }); } catch (e) { fail(e); }
+      };
+    });
+    const csvBtn = $('#btnJurnalCsv');
+    if (csvBtn) csvBtn.onclick = () => downloadCsv(`jurnal-${d.rombel.nama}.csv`, [['Pertemuan', 'Tanggal', 'Materi', 'Catatan', 'H', 'T', 'S', 'I', 'A']]
+      .concat(d.pertemuan.slice().reverse().map((p) => [p.pertemuanKe, p.tanggal, p.materi, p.catatan, p.ringkasan.H, p.ringkasan.T, p.ringkasan.S, p.ringkasan.I, p.ringkasan.A])));
+  } else {
+    const d = await call('presensi.rekap', { rombelId });
+    body.innerHTML = `<p class="muted">${d.totalPertemuan} pertemuan tercatat. Persentase hadir = (Hadir + Terlambat) ÷ pertemuan yang tercatat.</p>
+      <div class="card table-wrap"><table class="t"><thead><tr><th>#</th><th>Nama</th><th class="center">H</th><th class="center">T</th><th class="center">S</th><th class="center">I</th><th class="center">A</th><th class="num">% Hadir</th></tr></thead><tbody>
+      ${d.rows.map((r, i) => `<tr><td class="muted">${i + 1}</td><td><b>${esc(r.siswa.nama)}</b></td>${['H', 'T', 'S', 'I', 'A'].map((k) => `<td class="center">${r.c[k] || '<span class="muted">0</span>'}</td>`).join('')}
+        <td class="num">${r.persen === null ? '-' : `<span class="badge ${r.persen >= 90 ? 'badge-ok' : r.persen >= 75 ? 'badge-warn' : 'badge-danger'}">${r.persen}%</span>`}</td></tr>`).join('')}
+      </tbody></table></div><div class="row" style="margin-top:12px"><button class="btn" id="btnRekapCsv">⬇️ Ekspor rekap (CSV)</button></div>`;
+    $('#btnRekapCsv').onclick = () => downloadCsv(`rekap-presensi-${d.rombel.nama}.csv`, [['No', 'NIS', 'Nama', 'Hadir', 'Terlambat', 'Sakit', 'Izin', 'Alpa', '% Hadir']]
+      .concat(d.rows.map((r, i) => [i + 1, r.siswa.nis, r.siswa.nama, r.c.H, r.c.T, r.c.S, r.c.I, r.c.A, r.persen === null ? '' : r.persen])));
+  }
+};
+
+async function presensiForm(el, rombelId, pertemuanId) {
+  const d = await call('presensi.form', { rombelId, pertemuanId });
+  const st = {};
+  d.siswa.forEach((s) => { st[s.id] = d.status[s.id] || { status: 'H', keterangan: '' }; });
+  const kode = Object.keys(d.kode);
+  let changed = false;
+  S.guard = async () => !changed || confirmBox('Presensi belum disimpan. Tinggalkan halaman?', 'Tinggalkan');
+
+  el.innerHTML = `
+    <div class="page-head"><div><h1>${pertemuanId ? 'Ubah' : 'Pertemuan baru'} — ${esc(d.rombel.nama)}</h1><p>Default semua Hadir; cukup ubah yang tidak hadir.</p></div>
+      <div class="row"><button class="btn" id="btnBack">← Kembali</button><button class="btn btn-primary" id="btnSave">💾 Simpan</button></div></div>
+    <div class="card card-pad" style="margin-bottom:16px"><div class="form-grid">
+      ${fieldHtml({ key: 'tanggal', label: 'Tanggal', type: 'date', required: true }, d.pertemuan.tanggal)}
+      ${fieldHtml({ key: 'pertemuanKe', label: 'Pertemuan ke-', type: 'number' }, d.pertemuan.pertemuanKe)}
+      ${fieldHtml({ key: 'materi', label: 'Materi / kegiatan (jurnal)', full: true, placeholder: 'mis. Pengenalan Python: variabel & tipe data' }, d.pertemuan.materi)}
+      ${fieldHtml({ key: 'catatan', label: 'Catatan kejadian / refleksi', type: 'textarea' }, d.pertemuan.catatan)}
+    </div></div>
+    <div class="toolbar"><b>Kehadiran (${d.siswa.length} siswa)</b><span class="spacer"></span><span id="sum" class="row"></span>
+      <button class="btn btn-sm" id="allH">Semua hadir</button></div>
+    ${d.siswa.length ? `<div class="card table-wrap"><table class="t"><tbody>
+      ${d.siswa.map((s, i) => `<tr><td class="muted" style="width:36px">${i + 1}</td><td><b>${esc(s.nama)}</b><div class="small muted">${esc(s.kelas)}</div></td>
+        <td><div class="seg" data-s="${s.id}">${kode.map((k) => `<button type="button" data-k="${k}" title="${d.kode[k]}">${k}</button>`).join('')}</div></td>
+        <td style="min-width:160px"><input data-ket="${s.id}" placeholder="Keterangan" value="${esc(st[s.id].keterangan)}"></td></tr>`).join('')}
+    </tbody></table></div>` : '<div class="card empty">Rombel ini belum memiliki anggota.</div>'}`;
+
+  const paint = () => {
+    $$('.seg', el).forEach((seg) => $$('button', seg).forEach((b) => { b.className = st[seg.dataset.s].status === b.dataset.k ? 'on-' + b.dataset.k : ''; }));
+    const c = {}; kode.forEach((k) => { c[k] = 0; });
+    Object.values(st).forEach((x) => { c[x.status]++; });
+    $('#sum').innerHTML = kode.map((k) => `<span class="badge">${d.kode[k]} ${c[k]}</span>`).join('');
+  };
+  $$('.seg button', el).forEach((b) => { b.onclick = () => { st[b.parentNode.dataset.s].status = b.dataset.k; changed = true; paint(); }; });
+  $$('[data-ket]', el).forEach((i) => { i.oninput = () => { st[i.dataset.ket].keterangan = i.value; changed = true; }; });
+  $$('input, textarea', $('.form-grid', el)).forEach((i) => { i.addEventListener('input', () => { changed = true; }); });
+  $('#allH').onclick = () => { Object.values(st).forEach((x) => { x.status = 'H'; }); changed = true; paint(); };
+  $('#btnBack').onclick = () => go('presensi', { rombelId });
+  $('#btnSave').onclick = async () => {
+    const f = readForm(el, [{ key: 'tanggal' }, { key: 'pertemuanKe' }, { key: 'materi' }, { key: 'catatan' }]);
+    const btn = $('#btnSave'); btn.disabled = true;
+    try {
+      await call('presensi.save', {
+        pertemuan: Object.assign({ id: d.pertemuan.id, rombelId }, f),
+        records: Object.keys(st).map((id) => ({ siswaId: id, status: st[id].status, keterangan: st[id].keterangan })),
+      });
+      toast('Presensi & jurnal tersimpan', 'ok');
+      changed = false;
+      go('presensi', { rombelId });
+    } catch (e) { fail(e); btn.disabled = false; }
+  };
+  paint();
+}
+
+// ---------------------------------------------------------------- AI Studio
+function openTemplate(id) { S.studio = { tpl: id, result: null, mode: 'preview' }; go('studio', { keep: true }); }
+
+VIEWS.studio = async (el) => {
+  if (!S.params.keep) S.studio = { tpl: null, result: null, mode: 'preview' };
+  const kat = S.boot.katalog;
+  if (!S.studio.tpl) {
+    const groups = {};
+    kat.forEach((t) => { (groups[t.kategori] = groups[t.kategori] || []).push(t); });
+    el.innerHTML = `
+      <div class="page-head"><div><h1>✨ AI Studio</h1><p>Pilih jenis perangkat pembelajaran. AI otomatis memakai profil sekolah, tahun ajaran, dan kerangka kurikulum Anda.</p></div></div>
+      ${S.boot.settings.hasApiKey ? '' : `<div class="card card-pad" style="margin-bottom:16px;border-color:var(--warn)">⚠️ API key Claude belum diatur. <button class="btn btn-sm" onclick="go('pengaturan')">Atur sekarang</button></div>`}
+      ${Object.keys(groups).map((g) => `<h2 style="margin:20px 0 10px">${esc(g)}</h2><div class="grid grid-cards">
+        ${groups[g].map((t) => `<button class="card tpl" data-tpl="${t.id}"><span class="ico">${t.ikon}</span><h3>${esc(t.nama)}</h3><p>${esc(t.deskripsi)}</p></button>`).join('')}</div>`).join('')}`;
+    $$('[data-tpl]', el).forEach((b) => { b.onclick = () => openTemplate(b.dataset.tpl); });
+    return;
+  }
+
+  const t = kat.find((x) => x.id === S.studio.tpl);
+  const r = S.studio.result;
+  const prev = (r && r.input) || store.get('studio.' + t.id, {});
+  const fields = t.fields.concat([{ key: '_rombel', label: 'Kelas sasaran (opsional)', type: 'rombel' }]);
+  el.innerHTML = `
+    <div class="page-head"><div><button class="btn btn-sm btn-ghost" id="btnBackCat">← Semua jenis</button>
+      <h1 style="margin-top:6px">${t.ikon} ${esc(t.nama)}</h1><p>${esc(t.deskripsi)}</p></div></div>
+    <div class="studio">
+      <div class="card card-pad"><form class="form-grid" id="aiForm" onsubmit="return false">${fields.map((f) => fieldHtml(f, prev[f.key])).join('')}</form>
+        <div class="row" style="margin-top:14px"><button class="btn btn-primary" id="btnGen" style="flex:1">✨ ${r ? 'Buat ulang' : 'Buat dengan AI'}</button></div>
+        <p class="small muted">Model: ${esc(S.boot.settings.aiModel)} · effort ${esc(S.boot.settings.aiEffort)}. Dokumen panjang bisa memakan 1–3 menit.</p></div>
+      <div class="card" id="resultCard"></div>
+    </div>`;
+  $('#btnBackCat').onclick = () => { S.studio.tpl = null; go('studio', { keep: true }); };
+  drawResult();
+
+  $('#btnGen').onclick = async () => {
+    const values = readForm($('#aiForm'), fields);
+    try { validate(fields, values); } catch (e) { return fail(e); }
+    const rombelId = values._rombel; delete values._rombel;
+    store.set('studio.' + t.id, values);
+    const btn = $('#btnGen'); btn.disabled = true;
+    const started = Date.now();
+    $('#resultCard').innerHTML = '<div class="ai-wait"><div class="spin"></div><b>AI sedang menyusun dokumen…</b><div class="muted small" id="elapsed">0 detik</div></div>';
+    const timer = setInterval(() => { const e = $('#elapsed'); if (e) e.textContent = Math.round((Date.now() - started) / 1000) + ' detik'; }, 1000);
+    try {
+      const out = await call('ai.generate', { jenis: t.id, fields: values, rombelId });
+      S.studio.result = { judul: out.judul, konten: out.konten, jenis: out.jenis, mapel: out.mapel, kelas: out.kelas, input: values };
+      S.studio.mode = 'preview';
+      toast('Selesai! Periksa & sesuaikan sebelum dipakai.', 'ok');
+    } catch (e) { fail(e); }
+    clearInterval(timer);
+    btn.disabled = false;
+    drawResult();
+  };
+};
+
+function drawResult() {
+  const card = $('#resultCard');
+  if (!card) return;
+  const r = S.studio.result;
+  if (!r) {
+    card.innerHTML = '<div class="empty"><div class="big">📄</div><p>Isi formulir lalu klik <b>Buat dengan AI</b>. Hasilnya bisa diedit, disimpan ke arsip, dan diekspor ke Google Docs.</p></div>';
+    return;
+  }
+  card.innerHTML = `
+    <div class="card-head" style="flex-wrap:wrap">
+      <input id="docTitle" value="${esc(r.judul)}" style="flex:1;min-width:200px;font-weight:700">
+      <div class="row">
+        <button class="btn btn-sm" id="btnMode">${S.studio.mode === 'edit' ? '👁️ Pratinjau' : '✏️ Edit'}</button>
+        <button class="btn btn-sm" id="btnCopy">📋 Salin</button>
+        <button class="btn btn-sm" id="btnMd">⬇️ .md</button>
+        <button class="btn btn-sm" id="btnSaveDoc">💾 ${r.id ? 'Simpan' : 'Simpan ke arsip'}</button>
+        <button class="btn btn-sm btn-primary" id="btnGdoc">📄 Google Docs</button>
+      </div>
+    </div>
+    ${r.docUrl ? `<div class="small" style="padding:8px 18px;border-bottom:1px solid var(--border)">Terakhir diekspor: <a href="${esc(r.docUrl)}" target="_blank" rel="noopener">buka Google Docs ↗</a></div>` : ''}
+    ${S.studio.mode === 'edit' ? `<textarea class="doc-editor" id="docEditor">${esc(r.konten)}</textarea>` : `<div class="doc-view md">${renderMd(r.konten)}</div>`}`;
+  const sync = () => { const ed = $('#docEditor'); if (ed) r.konten = ed.value; r.judul = $('#docTitle').value; };
+  $('#btnMode').onclick = () => { sync(); S.studio.mode = S.studio.mode === 'edit' ? 'preview' : 'edit'; drawResult(); };
+  $('#btnCopy').onclick = () => { sync(); copyText(r.konten); };
+  $('#btnMd').onclick = () => { sync(); downloadFile((r.judul || 'dokumen').replace(/[\\/:*?"<>|]/g, '-') + '.md', r.konten, 'text/markdown;charset=utf-8'); };
+  const save = async () => {
+    sync();
+    const saved = await call('dok.save', { id: r.id, jenis: r.jenis, judul: r.judul, mapel: r.mapel, kelas: r.kelas, input: r.input, konten: r.konten });
+    r.id = saved.id;
+    return saved;
+  };
+  $('#btnSaveDoc').onclick = async (e) => {
+    e.target.disabled = true;
+    try { await save(); toast('Tersimpan di Arsip Dokumen', 'ok'); drawResult(); } catch (err) { fail(err); e.target.disabled = false; }
+  };
+  $('#btnGdoc').onclick = async (e) => {
+    e.target.disabled = true; e.target.textContent = '⏳ Mengekspor…';
+    try {
+      await save();
+      const out = await call('dok.export', { id: r.id });
+      r.docUrl = out.url;
+      window.open(out.url, '_blank');
+      toast('Google Docs dibuat di Drive Anda', 'ok');
+    } catch (err) { fail(err); }
+    drawResult();
+  };
+}
+
+// ---------------------------------------------------------------- Arsip dokumen
+async function openDokumen(id) {
+  try {
+    const d = await call('dok.get', { id });
+    S.studio = { tpl: S.boot.katalog.some((t) => t.id === d.jenis) ? d.jenis : 'bebas', result: d, mode: 'preview' };
+    go('studio', { keep: true });
+  } catch (e) { fail(e); }
+}
+
+VIEWS.dokumen = async (el) => {
+  const list = await call('dok.list');
+  const nama = {};
+  S.boot.katalog.forEach((t) => { nama[t.id] = t; });
+  const f = { q: '', jenis: '' };
+  const render = () => {
+    const q = f.q.toLowerCase();
+    const shown = list.filter((d) => (!f.jenis || d.jenis === f.jenis) && (!q || (d.judul + ' ' + d.mapel + ' ' + d.cuplikan).toLowerCase().includes(q)));
+    const jenisAda = [...new Set(list.map((d) => d.jenis))];
+    $('#dokList').innerHTML = shown.length ? shown.map((d) => `<div class="list-item"><span style="font-size:22px">${(nama[d.jenis] || {}).ikon || '📄'}</span>
+      <div style="flex:1;min-width:0"><b>${esc(d.judul)}</b><div class="small muted">${esc((nama[d.jenis] || {}).nama || d.jenis)} · ${esc(d.mapel)} · diubah ${fmtDate(d.diubah)}</div>
+      <div class="small muted" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(d.cuplikan)}</div></div>
+      ${d.docUrl ? `<a class="btn btn-sm" href="${esc(d.docUrl)}" target="_blank" rel="noopener">Docs ↗</a>` : ''}
+      <button class="btn btn-sm" data-open="${d.id}">Buka</button><button class="btn btn-sm btn-danger" data-del="${d.id}">Hapus</button></div>`).join('')
+      : `<div class="empty"><div class="big">🗂️</div><p>${list.length ? 'Tidak ada yang cocok.' : 'Arsip masih kosong. Buat dokumen di AI Studio lalu simpan.'}</p></div>`;
+    $('#fJenis').innerHTML = '<option value="">Semua jenis</option>' + jenisAda.map((j) => `<option value="${esc(j)}" ${j === f.jenis ? 'selected' : ''}>${esc((nama[j] || {}).nama || j)}</option>`).join('');
+    $$('[data-open]', el).forEach((b) => { b.onclick = () => openDokumen(b.dataset.open); });
+    $$('[data-del]', el).forEach((b) => {
+      b.onclick = async () => {
+        if (!(await confirmBox('Hapus dokumen ini dari arsip? (File Google Docs yang sudah diekspor tidak ikut terhapus.)', 'Hapus'))) return;
+        try { await call('dok.delete', { id: b.dataset.del }); toast('Dihapus', 'ok'); go('dokumen'); } catch (e) { fail(e); }
+      };
+    });
+  };
+  el.innerHTML = `
+    <div class="page-head"><div><h1>🗂️ Arsip Dokumen</h1><p>${list.length} dokumen tersimpan.</p></div><button class="btn btn-primary" onclick="go('studio')">✨ Buat baru</button></div>
+    <div class="toolbar"><select id="fJenis"></select><input id="fQ" placeholder="🔎 Cari judul / isi…"></div>
+    <div class="card" id="dokList"></div>`;
+  $('#fJenis').onchange = (e) => { f.jenis = e.target.value; render(); };
+  $('#fQ').oninput = (e) => { f.q = e.target.value; render(); };
+  render();
+};
+
+// ---------------------------------------------------------------- Pengaturan
+VIEWS.pengaturan = async (el) => {
+  const s = await call('settings.get');
+  S.boot.settings = s;
+  const profil = [
+    { key: 'namaGuru', label: 'Nama guru (dengan gelar)' }, { key: 'nip', label: 'NIP / NUPTK' },
+    { key: 'sekolah', label: 'Nama sekolah' }, { key: 'kota', label: 'Kota/Kabupaten' },
+    { key: 'kepalaSekolah', label: 'Nama kepala sekolah' }, { key: 'nipKepsek', label: 'NIP kepala sekolah' },
+    { key: 'tahunAjaran', label: 'Tahun ajaran' }, { key: 'semester', label: 'Semester', type: 'select', options: ['Ganjil', 'Genap'] },
+    { key: 'mapelList', label: 'Mapel / kegiatan yang diampu (pisahkan koma)', full: true },
+    { key: 'kktpDefault', label: 'KKTP default', type: 'number' },
+    { key: 'kurikulum', label: 'Kerangka kurikulum (konteks untuk AI)', type: 'textarea' },
+  ];
+  const ai = [
+    { key: 'apiKey', label: s.hasApiKey ? 'Ganti API key (kosongkan jika tidak diganti)' : 'API key Claude', type: 'password', placeholder: 'sk-ant-…', full: true },
+    { key: 'aiModel', label: 'Model', type: 'select', options: [
+      { value: 'claude-opus-5-5', label: 'Claude Opus 5.5 — kualitas terbaik (default)' },
+      { value: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5 — cepat & lebih hemat' },
+      { value: 'claude-haiku-5-5', label: 'Claude Haiku 5.5 — paling hemat' }] },
+    { key: 'aiEffort', label: 'Tingkat "berpikir" (effort)', type: 'select', options: [
+      { value: 'low', label: 'Rendah — paling cepat' }, { value: 'medium', label: 'Sedang (disarankan)' }, { value: 'high', label: 'Tinggi — paling teliti, lebih lama' }] },
+  ];
+  const theme = store.get('theme', 'auto');
+  el.innerHTML = `
+    <div class="page-head"><div><h1>⚙️ Pengaturan</h1><p>Profil dipakai otomatis di identitas perangkat pembelajaran buatan AI.</p></div></div>
+    <div class="stack">
+      <div class="card"><div class="card-head"><h2>👤 Profil guru &amp; sekolah</h2></div><div class="card-pad">
+        <form class="form-grid" id="fProfil" onsubmit="return false">${profil.map((f) => fieldHtml(f, s[f.key])).join('')}</form>
+        <div class="row" style="margin-top:14px"><button class="btn btn-primary" id="saveProfil">Simpan profil</button></div></div></div>
+      <div class="card"><div class="card-head"><h2>✨ AI (Claude)</h2>${s.hasApiKey ? `<span class="badge badge-ok">Terhubung · ${esc(s.apiKeyMask)}</span>` : '<span class="badge badge-warn">Belum diatur</span>'}</div><div class="card-pad">
+        <p class="small muted" style="margin-top:0">Buat API key di <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a> (berbayar per pemakaian). Key disimpan aman di Script Properties dan tidak pernah dikirim ke browser.</p>
+        <form class="form-grid" id="fAi" onsubmit="return false">${ai.map((f) => fieldHtml(f, s[f.key])).join('')}</form>
+        <div class="row" style="margin-top:14px"><button class="btn btn-primary" id="saveAi">Simpan pengaturan AI</button><button class="btn" id="testAi" ${s.hasApiKey ? '' : 'disabled'}>🔌 Tes koneksi</button>
+          ${s.hasApiKey ? '<button class="btn btn-danger" id="delKey">Hapus API key</button>' : ''}<span id="testOut" class="small muted"></span></div></div></div>
+      <div class="card"><div class="card-head"><h2>🗄️ Data &amp; tampilan</h2></div><div class="card-pad stack">
+        <div>Semua data tersimpan di Google Spreadsheet milik Anda: <a href="${esc(S.boot.dbUrl)}" target="_blank" rel="noopener">buka database ↗</a>. Backup cukup dengan <i>File → Make a copy</i>.</div>
+        <label class="f" style="max-width:260px">Tema<select id="selTheme"><option value="auto">Otomatis (ikuti perangkat)</option><option value="light">Terang</option><option value="dark">Gelap</option></select></label>
+        <div class="small muted">${esc(S.boot.app.nama)} v${esc(S.boot.app.versi)}</div></div></div>
+    </div>`;
+  $('#selTheme').value = theme;
+  $('#selTheme').onchange = (e) => { store.set('theme', e.target.value); applyTheme(); };
+  const saveWith = async (btn, values, msg) => {
+    btn.disabled = true;
+    try { S.boot.settings = await call('settings.save', values); toast(msg, 'ok'); paintFoot(); return true; } catch (e) { fail(e); return false; } finally { btn.disabled = false; }
+  };
+  $('#saveProfil').onclick = (e) => saveWith(e.target, readForm($('#fProfil'), profil), 'Profil tersimpan');
+  $('#saveAi').onclick = async (e) => { if (await saveWith(e.target, readForm($('#fAi'), ai), 'Pengaturan AI tersimpan')) go('pengaturan'); };
+  const del = $('#delKey');
+  if (del) del.onclick = async () => { if (await confirmBox('Hapus API key? Fitur AI tidak bisa dipakai sampai key diatur lagi.', 'Hapus')) { await saveWith(del, { hapusApiKey: true }, 'API key dihapus'); go('pengaturan'); } };
+  $('#testAi').onclick = async (e) => {
+    e.target.disabled = true; $('#testOut').textContent = 'Menghubungi Claude…';
+    try { const r = await call('ai.test'); $('#testOut').textContent = '✅ ' + r.pesan + ' (' + r.model + ')'; } catch (err) { $('#testOut').textContent = '❌ ' + err.message; }
+    e.target.disabled = false;
+  };
+};
+
+// ---------------------------------------------------------------- start
+function applyTheme() {
+  const t = store.get('theme', 'auto');
+  if (t === 'auto') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme', t);
+}
+function paintFoot() {
+  const s = S.boot.settings;
+  $('#sidebarFoot').innerHTML = `<b>${esc(s.namaGuru || 'Guru')}</b><br>${esc(s.sekolah || 'Atur profil di Pengaturan')}`;
+}
+
+(async function init() {
+  applyTheme();
+  $('#nav').addEventListener('click', (e) => { const b = e.target.closest('button[data-view]'); if (b) go(b.dataset.view); });
+  $('#menuBtn').onclick = () => { $('#sidebar').classList.add('open'); $('#scrim').classList.add('show'); };
+  $('#scrim').onclick = () => { $('#sidebar').classList.remove('open'); $('#scrim').classList.remove('show'); };
+  try {
+    S.boot = await call('app.bootstrap');
+    paintFoot();
+    go('dashboard');
+  } catch (e) {
+    $('#view').innerHTML = `<div class="card empty"><div class="big">⚠️</div><p>Gagal memuat aplikasi: ${esc(e.message)}</p>
+      <p class="small">Pastikan fungsi <b>setupDatabase</b> sudah dijalankan sekali dari editor Apps Script dan izin sudah diberikan.</p></div>`;
+  }
+})();
+</script>

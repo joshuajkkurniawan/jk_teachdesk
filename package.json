@@ -1,0 +1,10 @@
+{
+  "name": "jk-teachdesk",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Super app guru berbasis Google Apps Script + Google Sheets",
+  "scripts": {
+    "dev": "node dev/server.js",
+    "push": "clasp push"
+  }
+}
