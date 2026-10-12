@@ -15,6 +15,11 @@ function settingsGet_() {
 }
 
 function settingsSave_(p) {
+  const newKey = String(p.apiKey || '').trim();
+  if (newKey && !/^sk-ant-/.test(newKey)) {
+    throw new Error('Format API key salah. Key Claude selalu diawali "sk-ant-…" ' +
+      '(yang diawali "apikey_…" adalah ID key, bukan key-nya). Buat key baru di console.anthropic.com → API Keys, lalu salin teks rahasia yang muncul sekali saja.');
+  }
   const allowed = Object.keys(DEFAULT_SETTINGS);
   withLock_(function () {
     const t = readTable_('Pengaturan');
