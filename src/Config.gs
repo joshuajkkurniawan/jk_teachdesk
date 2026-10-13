@@ -47,6 +47,8 @@ const DEFAULT_SETTINGS = {
   mapelList: 'Informatika, Bahasa Inggris, Ekskul Band',
   kurikulum: 'Kurikulum Merdeka dengan pendekatan Pembelajaran Mendalam (mindful, meaningful, joyful learning) dan 8 dimensi Profil Lulusan',
   kktpDefault: '75',
-  aiModel: 'claude-opus-5-5',
+  aiProvider: 'gemini',          // 'gemini' | 'claude'
+  geminiModel: 'gemini-3.5-flash',
+  aiModel: 'claude-opus-5-5',    // model Claude
   aiEffort: 'medium',
 };

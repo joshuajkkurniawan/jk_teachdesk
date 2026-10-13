@@ -7,8 +7,9 @@
  * (mock) SpreadsheetApp, PropertiesService, dll. Data disimpan di
  * dev/.data.json. google.script.run di browser diganti fetch('/rpc').
  *
- * AI: jika env ANTHROPIC_API_KEY ada, panggilan AI benar-benar dikirim ke
- * Claude; jika tidak, dipakai jawaban tiruan agar UI tetap bisa dicoba.
+ * AI: jalankan dengan REAL_AI=1 agar panggilan AI benar-benar dikirim ke
+ * Gemini/Claude memakai key yang Anda simpan di Pengaturan (atau env
+ * GEMINI_API_KEY / ANTHROPIC_API_KEY). Tanpa itu, dipakai jawaban tiruan.
  */
 const fs = require('fs');
 const path = require('path');
@@ -90,7 +91,7 @@ const spreadsheet = {
 
 // ------------------------------------------------------------------ mock layanan lain
 const props = {
-  getProperty: (k) => (k in store.props ? store.props[k] : (k === 'ANTHROPIC_API_KEY' ? process.env.ANTHROPIC_API_KEY || null : null)),
+  getProperty: (k) => (k in store.props ? store.props[k] : (/_API_KEY$/.test(k) ? process.env[k] || null : null)),
   setProperty: (k, v) => { store.props[k] = v; persist(); },
   deleteProperty: (k) => { delete store.props[k]; persist(); },
 };
@@ -108,7 +109,8 @@ const UrlFetchApp = {
   fetch(url, opt) {
     const body = JSON.parse(opt.payload);
     let status = 200, text;
-    if (process.env.ANTHROPIC_API_KEY) {
+    const gemini = url.includes('generativelanguage');
+    if (process.env.REAL_AI === '1') {
       // Panggilan nyata (sinkron) lewat curl agar sama persis dengan UrlFetchApp.
       const args = ['-sS', '-w', '\n%{http_code}', url, '-X', 'POST', '-d', '@-'];
       Object.entries(Object.assign({ 'content-type': 'application/json' }, opt.headers)).forEach(([k, v]) => args.push('-H', `${k}: ${v}`));
@@ -116,8 +118,13 @@ const UrlFetchApp = {
       const i = out.lastIndexOf('\n');
       text = out.slice(0, i); status = Number(out.slice(i + 1));
     } else {
-      const res = fakeClaude(body);
-      text = JSON.stringify({ model: body.model + ' (tiruan)', stop_reason: 'end_turn', usage: {}, content: [{ type: 'thinking', thinking: '' }, { type: 'text', text: typeof res === 'string' ? res : JSON.stringify(res) }] });
+      const res = gemini
+        ? fakeClaude({ messages: [{ content: body.contents[0].parts[0].text }], output_config: body.generationConfig.responseJsonSchema ? { format: 1 } : null })
+        : fakeClaude(body);
+      const out = typeof res === 'string' ? res : JSON.stringify(res);
+      text = gemini
+        ? JSON.stringify({ modelVersion: url.split('/models/')[1].split(':')[0] + ' (tiruan)', candidates: [{ finishReason: 'STOP', content: { parts: [{ text: 'pikiran', thought: true }, { text: out }] } }] })
+        : JSON.stringify({ model: body.model + ' (tiruan)', stop_reason: 'end_turn', usage: {}, content: [{ type: 'thinking', thinking: '' }, { type: 'text', text: out }] });
     }
     return { getResponseCode: () => status, getContentText: () => text };
   },

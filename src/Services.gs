@@ -8,9 +8,14 @@
 function settingsGet_() {
   const s = Object.assign({}, DEFAULT_SETTINGS);
   readTable_('Pengaturan').objs.forEach(function (r) { if (r.kunci) s[r.kunci] = r.nilai; });
-  const key = PropertiesService.getScriptProperties().getProperty('ANTHROPIC_API_KEY');
-  s.hasApiKey = !!key;
-  s.apiKeyMask = key ? key.slice(0, 10) + '…' + key.slice(-4) : '';
+  const props = PropertiesService.getScriptProperties();
+  const mask = function (k) { return k ? k.slice(0, 6) + '…' + k.slice(-4) : ''; };
+  const claude = props.getProperty('ANTHROPIC_API_KEY'), gemini = props.getProperty('GEMINI_API_KEY');
+  s.hasClaudeKey = !!claude; s.claudeKeyMask = mask(claude);
+  s.hasGeminiKey = !!gemini; s.geminiKeyMask = mask(gemini);
+  // hasApiKey = penyedia yang AKTIF sudah punya key.
+  s.hasApiKey = s.aiProvider === 'claude' ? s.hasClaudeKey : s.hasGeminiKey;
+  s.aiLabel = s.aiProvider === 'claude' ? 'Claude · ' + s.aiModel : 'Gemini · ' + s.geminiModel;
   return s;
 }
 
@@ -19,6 +24,10 @@ function settingsSave_(p) {
   if (newKey && !/^sk-ant-/.test(newKey)) {
     throw new Error('Format API key salah. Key Claude selalu diawali "sk-ant-…" ' +
       '(yang diawali "apikey_…" adalah ID key, bukan key-nya). Buat key baru di console.anthropic.com → API Keys, lalu salin teks rahasia yang muncul sekali saja.');
+  }
+  const geminiKey = String(p.geminiKey || '').trim();
+  if (geminiKey && (/^sk-ant-/.test(geminiKey) || geminiKey.length < 20)) {
+    throw new Error('Format API key Gemini tidak dikenali. Ambil key di aistudio.google.com → Get API key.');
   }
   const allowed = Object.keys(DEFAULT_SETTINGS);
   withLock_(function () {
@@ -34,6 +43,8 @@ function settingsSave_(p) {
     PropertiesService.getScriptProperties().setProperty('ANTHROPIC_API_KEY', String(p.apiKey).trim());
   }
   if (p.hapusApiKey) PropertiesService.getScriptProperties().deleteProperty('ANTHROPIC_API_KEY');
+  if (geminiKey) PropertiesService.getScriptProperties().setProperty('GEMINI_API_KEY', geminiKey);
+  if (p.hapusGeminiKey) PropertiesService.getScriptProperties().deleteProperty('GEMINI_API_KEY');
   return settingsGet_();
 }
 

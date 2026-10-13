@@ -57,17 +57,23 @@ Lanjutkan dari langkah 5 Cara A.
 3. Jika editor menandai error sintaks (garis merah), biasanya ada bagian yang terpotong saat menyalin.
 4. **Deploy → Manage deployments → ✏️ → Version: New version → Deploy**. URL `/exec` hanya memakai versi yang sudah di-deploy, jadi perubahan tidak muncul tanpa langkah ini.
 
-## 2. Hubungkan AI (Claude)
+## 2. Hubungkan AI (Gemini atau Claude)
 
-1. Buat API key di [console.anthropic.com](https://console.anthropic.com/settings/keys) (isi saldo; bayar per pemakaian).
+Pilih penyedia di **Pengaturan → AI → Penyedia AI**. Key disimpan di *Script Properties* (server) dan tidak pernah dikirim ke browser.
+
+### Google Gemini (default, ada kuota gratis)
+1. Buat key di [aistudio.google.com/apikey](https://aistudio.google.com/apikey).
+2. Tempel di **API key Gemini** → **Simpan pengaturan AI** → **Tes koneksi**.
+3. Model:
+   - **Gemini 3.5 Flash** (default): seimbang, cukup untuk modul ajar dan soal.
+   - **Flash Lite**: paling cepat, kuota gratis paling longgar.
+   - **Gemini Pro**: kuota gratisnya 0, jadi hanya bisa dipakai jika billing aktif.
+4. Jika model sibuk (503) atau kuota per menit habis (429), aplikasi otomatis mencoba model Flash cadangan.
+
+### Anthropic Claude (berbayar)
+1. Buat key di [console.anthropic.com](https://console.anthropic.com/settings/keys) dan isi saldo.
    Key yang benar diawali **`sk-ant-`** dan hanya ditampilkan sekali. Teks `apikey_…` di daftar key adalah ID, bukan key.
-2. Di aplikasi: **Pengaturan → AI** → tempel key → **Simpan** → **Tes koneksi**.
-3. Pilih model:
-   - **Claude Opus 5.5** (default) — kualitas terbaik untuk modul ajar & soal.
-   - **Claude Sonnet 5.5** — lebih cepat & hemat.
-   - **Claude Haiku 5.5** — paling hemat untuk tugas ringan (surat ortu, ice breaking).
-
-Key disimpan di *Script Properties* (server), tidak pernah dikirim ke browser.
+2. Pilih model: **Opus 5.5** (terbaik), **Sonnet 5.5** (cepat), **Haiku 5.5** (hemat).
 
 ## 3. Alur kerja harian yang disarankan
 
@@ -85,7 +91,7 @@ Tidak perlu deploy untuk bereksperimen — ada **dev server** yang meniru Google
 ```bash
 npm run dev            # → http://localhost:8080
 # AI sungguhan (opsional):
-ANTHROPIC_API_KEY=sk-ant-... npm run dev
+REAL_AI=1 npm run dev  # memakai key yang disimpan di Pengaturan lokal
 ```
 
 Data lokal tersimpan di `dev/.data.json` (hapus file itu untuk reset). Tanpa API key, AI mengembalikan jawaban tiruan.
@@ -98,7 +104,7 @@ src/
 ├── Config.gs       SCHEMA tabel (= tab spreadsheet), konstanta, pengaturan default
 ├── Db.gs           "ORM" mini di atas Sheets: dbAll_, dbInsert_, dbUpdate_, dbUpsertMany_ …
 ├── Services.gs     logika: siswa, rombel, nilai, presensi, dashboard
-├── Ai.gs           panggilan Claude API (UrlFetchApp) + deskripsi rapor (structured output JSON)
+├── Ai.gs           callAi_ → Gemini / Claude (UrlFetchApp), model cadangan, deskripsi rapor (JSON)
 ├── AiTemplates.gs  katalog 22 jenis perangkat ← tambah jenis baru di sini
 ├── Dokumen.gs      arsip dokumen + konverter Markdown → Google Docs
 ├── Index.html      kerangka halaman

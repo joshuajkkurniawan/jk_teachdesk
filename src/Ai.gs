@@ -1,11 +1,89 @@
 /**
- * Ai.gs — integrasi Claude API (Anthropic) via UrlFetchApp.
+ * Ai.gs — integrasi AI via UrlFetchApp. Dua penyedia:
+ *   - Gemini (Google AI Studio) → callGemini_   key: GEMINI_API_KEY
+ *   - Claude (Anthropic)        → callClaude_   key: ANTHROPIC_API_KEY
+ * Pilih penyedia di menu Pengaturan. Semua fitur memanggil callAi_.
  *
- * API key disimpan di Script Properties (ANTHROPIC_API_KEY), TIDAK pernah
- * dikirim ke browser. Atur lewat menu Pengaturan di aplikasi.
+ * API key disimpan di Script Properties, TIDAK pernah dikirim ke browser.
  */
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
+const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/';
+// Dicoba berurutan bila model pilihan sibuk (503), kuota habis (429), atau sudah tidak tersedia (404).
+const GEMINI_CADANGAN = ['gemini-3.5-flash', 'gemini-flash-lite-latest', 'gemini-3-flash-preview'];
+
+/** Pintu tunggal AI: memanggil penyedia yang aktif di Pengaturan. */
+function callAi_(opts) {
+  return settingsGet_().aiProvider === 'claude' ? callClaude_(opts) : callGemini_(opts);
+}
+
+/**
+ * Memanggil Gemini generateContent dan mengembalikan teks jawaban.
+ * opts: { system, prompt, maxTokens, schema }
+ */
+function callGemini_(opts) {
+  const key = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
+  if (!key) throw new Error('API key Gemini belum diatur. Buka menu Pengaturan → AI.');
+  const s = settingsGet_();
+  const body = {
+    contents: [{ role: 'user', parts: [{ text: opts.prompt }] }],
+    // Gemini 3.x ikut menghitung token "berpikir" di batas ini, jadi beri ruang besar.
+    generationConfig: { maxOutputTokens: opts.maxTokens || 32768 },
+  };
+  if (opts.system) body.systemInstruction = { parts: [{ text: opts.system }] };
+  if (opts.schema) {
+    body.generationConfig.responseMimeType = 'application/json';
+    body.generationConfig.responseJsonSchema = opts.schema;
+  }
+
+  const models = [s.geminiModel || DEFAULT_SETTINGS.geminiModel].concat(GEMINI_CADANGAN)
+    .filter(function (m, i, arr) { return m && arr.indexOf(m) === i; });
+  let lastErr = null;
+  for (let i = 0; i < models.length; i++) {
+    const res = UrlFetchApp.fetch(GEMINI_URL + encodeURIComponent(models[i]) + ':generateContent', {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { 'x-goog-api-key': key },
+      payload: JSON.stringify(body),
+      muteHttpExceptions: true,
+    });
+    const code = res.getResponseCode();
+    let json;
+    try { json = JSON.parse(res.getContentText()); } catch (e) { json = null; }
+    if (code === 200) return parseGemini_(json, models[i]);
+
+    const msg = json && json.error ? json.error.message : res.getContentText().slice(0, 300);
+    if (code === 400 && /API key/i.test(msg)) throw new Error('API key Gemini tidak valid. Periksa kembali di Pengaturan.');
+    if (code === 401 || code === 403) throw new Error('API key Gemini ditolak (' + code + '): ' + msg.slice(0, 200));
+    if (code === 429 || code === 404 || code >= 500) {
+      lastErr = { code: code, model: models[i] };
+      console.warn('Gemini ' + models[i] + ' → ' + code + ', mencoba model cadangan');
+      continue;
+    }
+    throw new Error('Gagal memanggil Gemini (' + code + '): ' + msg.slice(0, 300));
+  }
+  if (lastErr && lastErr.code === 429) {
+    throw new Error('Kuota gratis Gemini habis untuk semua model (429). Tunggu beberapa menit (batas per menit) atau besok (batas harian), atau aktifkan billing di Google AI Studio.');
+  }
+  throw new Error('Semua model Gemini sedang sibuk. Coba lagi 1–2 menit lagi. (' + (lastErr ? lastErr.code + ' ' + lastErr.model : '') + ')');
+}
+
+function parseGemini_(json, model) {
+  const cand = (json.candidates || [])[0];
+  if (!cand) {
+    const block = json.promptFeedback && json.promptFeedback.blockReason;
+    throw new Error(block ? 'Permintaan diblokir filter keamanan Gemini (' + block + '). Ubah kata-kata pada isian.' : 'Gemini tidak mengembalikan jawaban. Coba lagi.');
+  }
+  if (/SAFETY|PROHIBITED|BLOCKLIST|RECITATION/.test(cand.finishReason || '')) {
+    throw new Error('Jawaban dihentikan filter Gemini (' + cand.finishReason + '). Coba ubah kata-kata pada isian.');
+  }
+  const text = ((cand.content && cand.content.parts) || [])
+    .filter(function (p) { return p.text && !p.thought; })
+    .map(function (p) { return p.text; })
+    .join('').trim();
+  if (!text) throw new Error('Gemini tidak mengembalikan teks. Coba lagi.');
+  return { text: text, truncated: cand.finishReason === 'MAX_TOKENS', usage: json.usageMetadata, model: json.modelVersion || model };
+}
 
 /**
  * Memanggil Claude Messages API dan mengembalikan teks jawaban.
@@ -113,7 +191,7 @@ function aiGenerate_(p) {
     if (r) prompt += '\n\nKelas sasaran: ' + r.nama + ' (' + anggotaRombel_(r).length + ' peserta didik).';
   }
 
-  const out = callClaude_({ system: systemPrompt_(s), prompt: prompt });
+  const out = callAi_({ system: systemPrompt_(s), prompt: prompt });
   const judul = tpl.id === 'bebas' ? f.judul : tpl.nama + ' — ' + (f.topik || f.lagu || f.tugas || f.mapel || f.tujuan || '').toString().slice(0, 80);
   return {
     judul: judul.replace(/ — $/, ''),
@@ -165,7 +243,7 @@ function aiDeskripsiRapor_(p) {
     required: ['deskripsi'],
     additionalProperties: false,
   };
-  const out = callClaude_({ system: systemPrompt_(s), prompt: prompt, schema: schema });
+  const out = callAi_({ system: systemPrompt_(s), prompt: prompt, schema: schema });
   const parsed = JSON.parse(out.text);
   const map = {};
   parsed.deskripsi.forEach(function (d) { map[d.siswaId] = d.deskripsi; });
@@ -175,6 +253,6 @@ function aiDeskripsiRapor_(p) {
 }
 
 function aiTest_() {
-  const out = callClaude_({ system: 'Jawab sangat singkat dalam bahasa Indonesia.', prompt: 'Sapa seorang guru dalam satu kalimat.', maxTokens: 2000 });
+  const out = callAi_({ system: 'Jawab sangat singkat dalam bahasa Indonesia.', prompt: 'Sapa seorang guru dalam satu kalimat.', maxTokens: 4000 });
   return { pesan: out.text, model: out.model };
 }

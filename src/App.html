@@ -238,7 +238,7 @@ VIEWS.dashboard = async (el) => {
   const salam = h < 11 ? 'Selamat pagi' : h < 15 ? 'Selamat siang' : h < 18 ? 'Selamat sore' : 'Selamat malam';
   const setup = [
     { done: !!s.namaGuru && !!s.sekolah, label: 'Lengkapi profil guru & sekolah', view: 'pengaturan' },
-    { done: s.hasApiKey, label: 'Hubungkan API key Claude untuk AI Studio', view: 'pengaturan' },
+    { done: s.hasApiKey, label: 'Hubungkan API key AI (Gemini/Claude) untuk AI Studio', view: 'pengaturan' },
     { done: d.stat.siswa > 0, label: 'Tambahkan / impor data siswa', view: 'siswa' },
     { done: d.stat.rombel > 0, label: 'Buat kelas mapel & ekskul', view: 'rombel' },
   ];
@@ -593,7 +593,7 @@ VIEWS.nilai = async (el) => {
 };
 
 async function deskripsiRapor(gb) {
-  if (!S.boot.settings.hasApiKey) { toast('Atur API key Claude di Pengaturan dulu.', 'err'); return; }
+  if (!S.boot.settings.hasApiKey) { toast('Atur API key AI di Pengaturan dulu.', 'err'); return; }
   const m = modal({
     title: '✨ Deskripsi capaian rapor — ' + gb.rombel.nama, wide: true,
     body: `<div class="stack"><p class="muted" style="margin:0">AI menyusun deskripsi per siswa dari nilai &amp; TP tiap asesmen. Simpan nilai terlebih dahulu agar data terbaru dipakai.</p>
@@ -730,7 +730,7 @@ VIEWS.studio = async (el) => {
     kat.forEach((t) => { (groups[t.kategori] = groups[t.kategori] || []).push(t); });
     el.innerHTML = `
       <div class="page-head"><div><h1>✨ AI Studio</h1><p>Pilih jenis perangkat pembelajaran. AI otomatis memakai profil sekolah, tahun ajaran, dan kerangka kurikulum Anda.</p></div></div>
-      ${S.boot.settings.hasApiKey ? '' : `<div class="card card-pad" style="margin-bottom:16px;border-color:var(--warn)">⚠️ API key Claude belum diatur. <button class="btn btn-sm" onclick="go('pengaturan')">Atur sekarang</button></div>`}
+      ${S.boot.settings.hasApiKey ? '' : `<div class="card card-pad" style="margin-bottom:16px;border-color:var(--warn)">⚠️ API key AI belum diatur. <button class="btn btn-sm" onclick="go('pengaturan')">Atur sekarang</button></div>`}
       ${Object.keys(groups).map((g) => `<h2 style="margin:20px 0 10px">${esc(g)}</h2><div class="grid grid-cards">
         ${groups[g].map((t) => `<button class="card tpl" data-tpl="${t.id}"><span class="ico">${t.ikon}</span><h3>${esc(t.nama)}</h3><p>${esc(t.deskripsi)}</p></button>`).join('')}</div>`).join('')}`;
     $$('[data-tpl]', el).forEach((b) => { b.onclick = () => openTemplate(b.dataset.tpl); });
@@ -747,7 +747,7 @@ VIEWS.studio = async (el) => {
     <div class="studio">
       <div class="card card-pad"><form class="form-grid" id="aiForm" onsubmit="return false">${fields.map((f) => fieldHtml(f, prev[f.key])).join('')}</form>
         <div class="row" style="margin-top:14px"><button class="btn btn-primary" id="btnGen" style="flex:1">✨ ${r ? 'Buat ulang' : 'Buat dengan AI'}</button></div>
-        <p class="small muted">Model: ${esc(S.boot.settings.aiModel)} · effort ${esc(S.boot.settings.aiEffort)}. Dokumen panjang bisa memakan 1–3 menit.</p></div>
+        <p class="small muted">AI: ${esc(S.boot.settings.aiLabel)}. Dokumen panjang bisa memakan 1–3 menit.</p></div>
       <div class="card" id="resultCard"></div>
     </div>`;
   $('#btnBackCat').onclick = () => { S.studio.tpl = null; go('studio', { keep: true }); };
@@ -877,15 +877,30 @@ VIEWS.pengaturan = async (el) => {
     { key: 'kktpDefault', label: 'KKTP default', type: 'number' },
     { key: 'kurikulum', label: 'Kerangka kurikulum (konteks untuk AI)', type: 'textarea' },
   ];
-  const ai = [
-    { key: 'apiKey', label: s.hasApiKey ? 'Ganti API key (kosongkan jika tidak diganti)' : 'API key Claude', type: 'password', placeholder: 'sk-ant-…', full: true },
-    { key: 'aiModel', label: 'Model', type: 'select', options: [
-      { value: 'claude-opus-5-5', label: 'Claude Opus 5.5 — kualitas terbaik (default)' },
+  const aiUmum = [
+    { key: 'aiProvider', label: 'Penyedia AI', type: 'select', full: true, options: [
+      { value: 'gemini', label: 'Google Gemini — ada kuota gratis (disarankan untuk mulai)' },
+      { value: 'claude', label: 'Anthropic Claude — berbayar per pemakaian' }] },
+  ];
+  const aiGemini = [
+    { key: 'geminiKey', label: s.hasGeminiKey ? 'Ganti API key Gemini (kosongkan jika tidak diganti)' : 'API key Gemini', type: 'password', placeholder: 'AIza… / AQ.…', full: true },
+    { key: 'geminiModel', label: 'Model Gemini', type: 'select', full: true, options: [
+      { value: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash — seimbang (default)' },
+      { value: 'gemini-flash-lite-latest', label: 'Gemini Flash Lite — paling cepat & kuota longgar' },
+      { value: 'gemini-3-flash-preview', label: 'Gemini 3 Flash (preview)' },
+      { value: 'gemini-pro-latest', label: 'Gemini Pro — kualitas tertinggi (perlu billing aktif)' }] },
+  ];
+  const aiClaude = [
+    { key: 'apiKey', label: s.hasClaudeKey ? 'Ganti API key Claude (kosongkan jika tidak diganti)' : 'API key Claude', type: 'password', placeholder: 'sk-ant-…', full: true },
+    { key: 'aiModel', label: 'Model Claude', type: 'select', options: [
+      { value: 'claude-opus-5-5', label: 'Claude Opus 5.5 — kualitas terbaik' },
       { value: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5 — cepat & lebih hemat' },
       { value: 'claude-haiku-5-5', label: 'Claude Haiku 5.5 — paling hemat' }] },
     { key: 'aiEffort', label: 'Tingkat "berpikir" (effort)', type: 'select', options: [
       { value: 'low', label: 'Rendah — paling cepat' }, { value: 'medium', label: 'Sedang (disarankan)' }, { value: 'high', label: 'Tinggi — paling teliti, lebih lama' }] },
   ];
+  const ai = aiUmum.concat(aiGemini, aiClaude);
+  const keyBadge = (has, mask) => has ? `<span class="badge badge-ok">Key tersimpan · ${esc(mask)}</span>` : '<span class="badge badge-warn">Key belum diatur</span>';
   const theme = store.get('theme', 'auto');
   el.innerHTML = `
     <div class="page-head"><div><h1>⚙️ Pengaturan</h1><p>Profil dipakai otomatis di identitas perangkat pembelajaran buatan AI.</p></div></div>
@@ -893,11 +908,25 @@ VIEWS.pengaturan = async (el) => {
       <div class="card"><div class="card-head"><h2>👤 Profil guru &amp; sekolah</h2></div><div class="card-pad">
         <form class="form-grid" id="fProfil" onsubmit="return false">${profil.map((f) => fieldHtml(f, s[f.key])).join('')}</form>
         <div class="row" style="margin-top:14px"><button class="btn btn-primary" id="saveProfil">Simpan profil</button></div></div></div>
-      <div class="card"><div class="card-head"><h2>✨ AI (Claude)</h2>${s.hasApiKey ? `<span class="badge badge-ok">Terhubung · ${esc(s.apiKeyMask)}</span>` : '<span class="badge badge-warn">Belum diatur</span>'}</div><div class="card-pad">
-        <p class="small muted" style="margin-top:0">Buat API key di <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a> (berbayar per pemakaian). Key disimpan aman di Script Properties dan tidak pernah dikirim ke browser.</p>
-        <form class="form-grid" id="fAi" onsubmit="return false">${ai.map((f) => fieldHtml(f, s[f.key])).join('')}</form>
-        <div class="row" style="margin-top:14px"><button class="btn btn-primary" id="saveAi">Simpan pengaturan AI</button><button class="btn" id="testAi" ${s.hasApiKey ? '' : 'disabled'}>🔌 Tes koneksi</button>
-          ${s.hasApiKey ? '<button class="btn btn-danger" id="delKey">Hapus API key</button>' : ''}<span id="testOut" class="small muted"></span></div></div></div>
+      <div class="card"><div class="card-head"><h2>✨ AI</h2>${s.hasApiKey ? `<span class="badge badge-ok">Aktif · ${esc(s.aiLabel)}</span>` : '<span class="badge badge-warn">Belum siap</span>'}</div><div class="card-pad stack">
+        <p class="small muted" style="margin:0">Key disimpan aman di Script Properties (server) dan tidak pernah dikirim ke browser.</p>
+        <form id="fAi" class="stack" onsubmit="return false">
+          <div class="form-grid">${aiUmum.map((f) => fieldHtml(f, s[f.key])).join('')}</div>
+          <div class="stack" data-prov="gemini">
+            <div class="row"><h3 style="flex:1">Google Gemini</h3>${keyBadge(s.hasGeminiKey, s.geminiKeyMask)}</div>
+            <p class="small muted" style="margin:0">Buat key gratis di <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>. Jika model sibuk atau kuota habis, aplikasi otomatis mencoba model Flash lain.</p>
+            <div class="form-grid">${aiGemini.map((f) => fieldHtml(f, s[f.key])).join('')}</div>
+            ${s.hasGeminiKey ? '<div><button type="button" class="btn btn-sm btn-danger" data-delkey="hapusGeminiKey">Hapus key Gemini</button></div>' : ''}
+          </div>
+          <div class="stack" data-prov="claude">
+            <div class="row"><h3 style="flex:1">Anthropic Claude</h3>${keyBadge(s.hasClaudeKey, s.claudeKeyMask)}</div>
+            <p class="small muted" style="margin:0">Buat key di <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a> (berbayar). Key diawali <code>sk-ant-</code>.</p>
+            <div class="form-grid">${aiClaude.map((f) => fieldHtml(f, s[f.key])).join('')}</div>
+            ${s.hasClaudeKey ? '<div><button type="button" class="btn btn-sm btn-danger" data-delkey="hapusApiKey">Hapus key Claude</button></div>' : ''}
+          </div>
+        </form>
+        <div class="row"><button class="btn btn-primary" id="saveAi">Simpan pengaturan AI</button><button class="btn" id="testAi" ${s.hasApiKey ? '' : 'disabled'}>🔌 Tes koneksi</button>
+          <span id="testOut" class="small muted"></span></div></div></div>
       <div class="card"><div class="card-head"><h2>🗄️ Data &amp; tampilan</h2></div><div class="card-pad stack">
         <div>Semua data tersimpan di Google Spreadsheet milik Anda: <a href="${esc(S.boot.dbUrl)}" target="_blank" rel="noopener">buka database ↗</a>. Backup cukup dengan <i>File → Make a copy</i>.</div>
         <label class="f" style="max-width:260px">Tema<select id="selTheme"><option value="auto">Otomatis (ikuti perangkat)</option><option value="light">Terang</option><option value="dark">Gelap</option></select></label>
@@ -911,10 +940,14 @@ VIEWS.pengaturan = async (el) => {
   };
   $('#saveProfil').onclick = (e) => saveWith(e.target, readForm($('#fProfil'), profil), 'Profil tersimpan');
   $('#saveAi').onclick = async (e) => { if (await saveWith(e.target, readForm($('#fAi'), ai), 'Pengaturan AI tersimpan')) go('pengaturan'); };
-  const del = $('#delKey');
-  if (del) del.onclick = async () => { if (await confirmBox('Hapus API key? Fitur AI tidak bisa dipakai sampai key diatur lagi.', 'Hapus')) { await saveWith(del, { hapusApiKey: true }, 'API key dihapus'); go('pengaturan'); } };
+  const showProv = () => { const v = $('#f_aiProvider').value; $$('[data-prov]', el).forEach((d) => d.classList.toggle('hidden', d.dataset.prov !== v)); };
+  $('#f_aiProvider').onchange = showProv;
+  showProv();
+  $$('[data-delkey]', el).forEach((b) => {
+    b.onclick = async () => { if (await confirmBox('Hapus API key ini?', 'Hapus')) { await saveWith(b, { [b.dataset.delkey]: true }, 'API key dihapus'); go('pengaturan'); } };
+  });
   $('#testAi').onclick = async (e) => {
-    e.target.disabled = true; $('#testOut').textContent = 'Menghubungi Claude…';
+    e.target.disabled = true; $('#testOut').textContent = 'Menghubungi AI… (simpan dulu bila baru mengganti penyedia)';
     try { const r = await call('ai.test'); $('#testOut').textContent = '✅ ' + r.pesan + ' (' + r.model + ')'; } catch (err) { $('#testOut').textContent = '❌ ' + err.message; }
     e.target.disabled = false;
   };

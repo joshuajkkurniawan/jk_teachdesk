@@ -103,7 +103,7 @@ function api(action, payload) {
 function cekInstalasi() {
   const missing = {};
   const extra = [['aiCatalog_', 'AiTemplates.gs'], ['aiTemplates_', 'AiTemplates.gs'],
-    ['dbAll_', 'Db.gs'], ['sheet_', 'Db.gs'], ['callClaude_', 'Ai.gs'], ['markdownToDoc_', 'Dokumen.gs']];
+    ['dbAll_', 'Db.gs'], ['sheet_', 'Db.gs'], ['callAi_', 'Ai.gs'], ['callGemini_', 'Ai.gs'], ['markdownToDoc_', 'Dokumen.gs']];
   Object.keys(ROUTES).map(function (k) { return ROUTES[k]; }).concat(extra).forEach(function (r) {
     if (typeof globalThis[r[0]] !== 'function') (missing[r[1]] = missing[r[1]] || []).push(r[0]);
   });
