@@ -63,6 +63,12 @@ const ROUTES = {
   'dok.save': ['dokSave_', 'Dokumen.gs'],
   'dok.delete': ['dokDelete_', 'Dokumen.gs'],
   'dok.export': ['dokExport_', 'Dokumen.gs'],
+
+  'siguru.status': ['siguruStatus_', 'SiGuru.gs'],
+  'siguru.tarik': ['siguruTarik_', 'SiGuru.gs'],
+  'siguru.hariIni': ['siguruHariIni_', 'SiGuru.gs'],
+  'siguru.kirim': ['siguruKirim_', 'SiGuru.gs'],
+  'siguru.tarikJurnal': ['siguruTarikJurnal_', 'SiGuru.gs'],
 };
 
 function bootstrap_() {

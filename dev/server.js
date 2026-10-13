@@ -23,29 +23,35 @@ const DATA = path.join(__dirname, '.data.json');
 const PORT = Number(process.env.PORT || 8080);
 
 // ------------------------------------------------------------------ mock Sheets
-let store = fs.existsSync(DATA) ? JSON.parse(fs.readFileSync(DATA, 'utf8')) : { sheets: {}, props: {} };
+// Beberapa spreadsheet (book) sekaligus: TeachDesk ('local-dev') + tiruan SiGuru.
+let store = fs.existsSync(DATA) ? JSON.parse(fs.readFileSync(DATA, 'utf8')) : { books: {}, props: {} };
+if (store.sheets) { store.books = { 'local-dev': { sheets: store.sheets } }; delete store.sheets; } // format lama
 const persist = () => fs.writeFileSync(DATA, JSON.stringify(store));
+require('./siguru-demo').seed(store, (bookId, name) => (store.books[bookId] = store.books[bookId] || { sheets: {} }).sheets[name] = []);
 
 function colToNum(c) { return c.split('').reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0); }
 
-function makeRange(sheet, r, c, nr, nc) {
-  const grid = () => store.sheets[sheet];
+function makeRange(book, sheet, r, c, nr, nc) {
+  const grid = () => store.books[book].sheets[sheet];
+  const read = () => {
+    const g = grid(), out = [];
+    for (let i = 0; i < nr; i++) {
+      const row = [];
+      for (let j = 0; j < nc; j++) row.push(((g[r - 1 + i] || [])[c - 1 + j]) ?? '');
+      out.push(row);
+    }
+    return out;
+  };
   return {
-    getValues() {
-      const g = grid(), out = [];
-      for (let i = 0; i < nr; i++) {
-        const row = [];
-        for (let j = 0; j < nc; j++) row.push(((g[r - 1 + i] || [])[c - 1 + j]) ?? '');
-        out.push(row);
-      }
-      return out;
-    },
+    getValues: read,
+    getDisplayValues: read,
     setValues(vals) {
       if (vals.length !== nr || vals[0].length !== nc) throw new Error(`setValues dimensi salah: ${vals.length}x${vals[0].length} vs ${nr}x${nc}`);
       const g = grid();
       vals.forEach((row, i) => {
         g[r - 1 + i] = g[r - 1 + i] || [];
-        row.forEach((v, j) => { g[r - 1 + i][c - 1 + j] = v === null || v === undefined ? '' : String(v); });
+        // Seperti Sheets: awalan ' memaksa teks dan tidak ikut tersimpan.
+        row.forEach((v, j) => { g[r - 1 + i][c - 1 + j] = v === null || v === undefined ? '' : String(v).replace(/^'/, ''); });
       });
       persist();
       return this;
@@ -53,7 +59,6 @@ function makeRange(sheet, r, c, nr, nc) {
     clearContent() {
       const g = grid();
       for (let i = 0; i < nr; i++) for (let j = 0; j < nc; j++) if (g[r - 1 + i]) g[r - 1 + i][c - 1 + j] = '';
-      // buang baris kosong di ekor
       while (g.length && g[g.length - 1].every((v) => v === '')) g.pop();
       persist();
       return this;
@@ -62,8 +67,8 @@ function makeRange(sheet, r, c, nr, nc) {
   };
 }
 
-function makeSheet(name) {
-  const grid = () => store.sheets[name];
+function makeSheet(book, name) {
+  const grid = () => store.books[book].sheets[name];
   const lastRow = () => { const g = grid(); let n = g.length; while (n && (g[n - 1] || []).every((v) => v === '')) n--; return n; };
   const lastCol = () => grid().reduce((m, row) => { let n = row.length; while (n && row[n - 1] === '') n--; return Math.max(m, n); }, 0);
   return {
@@ -72,22 +77,29 @@ function makeSheet(name) {
     getLastColumn: lastCol,
     getMaxRows: () => 1000,
     setFrozenRows() {},
-    getDataRange() { return makeRange(name, 1, 1, Math.max(lastRow(), 1), Math.max(lastCol(), 1)); },
+    getDataRange() { return makeRange(book, name, 1, 1, Math.max(lastRow(), 1), Math.max(lastCol(), 1)); },
     getRange(a, b, c, d) {
-      if (typeof a === 'string') { const m = a.match(/^([A-Z]+):([A-Z]+)$/); return makeRange(name, 1, colToNum(m[1]), 1000, colToNum(m[2]) - colToNum(m[1]) + 1); }
-      return makeRange(name, a, b, c || 1, d || 1);
+      if (typeof a === 'string') { const m = a.match(/^([A-Z]+):([A-Z]+)$/); return makeRange(book, name, 1, colToNum(m[1]), 1000, colToNum(m[2]) - colToNum(m[1]) + 1); }
+      return makeRange(book, name, a, b, c || 1, d || 1);
     },
   };
 }
 
-const spreadsheet = {
-  getId: () => 'local-dev',
-  getUrl: () => 'file://' + DATA,
-  getSheetByName: (n) => (store.sheets[n] ? makeSheet(n) : null),
-  insertSheet: (n) => { store.sheets[n] = []; persist(); return makeSheet(n); },
-  getSheets: () => Object.keys(store.sheets).map(makeSheet),
-  deleteSheet: (s) => { delete store.sheets[s.getName()]; persist(); },
-};
+function makeBook(id) {
+  if (!store.books[id]) {
+    if (id !== 'local-dev') throw new Error('Spreadsheet tidak ditemukan: ' + id);
+    store.books[id] = { sheets: {} };
+  }
+  const sheets = () => store.books[id].sheets;
+  return {
+    getId: () => id,
+    getUrl: () => (id === 'local-dev' ? 'file://' + DATA : 'https://docs.google.com/spreadsheets/d/' + id),
+    getSheetByName: (n) => (sheets()[n] ? makeSheet(id, n) : null),
+    insertSheet: (n) => { sheets()[n] = []; persist(); return makeSheet(id, n); },
+    getSheets: () => Object.keys(sheets()).map((n) => makeSheet(id, n)),
+    deleteSheet: (s) => { delete sheets()[s.getName()]; persist(); },
+  };
+}
 
 // ------------------------------------------------------------------ mock layanan lain
 const props = {
@@ -141,12 +153,15 @@ const DocumentApp = {
 
 const sandbox = {
   console,
-  SpreadsheetApp: { openById: () => spreadsheet, getActiveSpreadsheet: () => spreadsheet, create: () => spreadsheet },
+  SpreadsheetApp: { openById: (id) => makeBook(id), getActiveSpreadsheet: () => makeBook('local-dev'), create: () => makeBook('local-dev') },
   PropertiesService: { getScriptProperties: () => props },
   LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) },
   Utilities: {
     getUuid: () => crypto.randomUUID(),
-    formatDate: (d, tz, fmt) => new Date(d.getTime() + 7 * 3600e3).toISOString().slice(0, 10),
+    formatDate: (d, tz, fmt) => {
+      const t = new Date(d.getTime() + 7 * 3600e3).toISOString(); // WIB
+      return fmt === 'HH:mm' ? t.slice(11, 16) : t.slice(0, 10);
+    },
   },
   Session: { getScriptTimeZone: () => 'Asia/Jakarta' },
   UrlFetchApp,

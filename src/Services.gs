@@ -288,9 +288,15 @@ function presensiForm_(p) {
       .forEach(function (r) { status[r.siswaId] = { status: r.status, keterangan: r.keterangan }; });
   } else {
     const count = dbWhere_('Pertemuan', function (x) { return x.rombelId === rombel.id; }).length;
-    pertemuan = { rombelId: rombel.id, tanggal: Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd'), pertemuanKe: String(count + 1), materi: '', catatan: '' };
+    pertemuan = {
+      rombelId: rombel.id, tanggal: p.tanggal || Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd'),
+      pertemuanKe: String(count + 1), materi: '', catatan: '', jamKe: p.jamKe || '', refBaik: '', refBelum: '', refTantangan: '',
+    };
   }
-  return { rombel: rombel, siswa: siswa, pertemuan: pertemuan, status: status, kode: STATUS_PRESENSI };
+  return {
+    rombel: rombel, siswa: siswa, pertemuan: pertemuan, status: status, kode: STATUS_PRESENSI,
+    siguru: !!rombel.siguruKelas && settingsGet_().siguruAktif !== 'false', slots: siguruSlotRombel_(rombel.id),
+  };
 }
 
 /** p = { pertemuan: {...}, records: [{siswaId, status, keterangan}] } */
@@ -298,7 +304,10 @@ function presensiSave_(p) {
   const pt = p.pertemuan || {};
   mustRombel_(pt.rombelId);
   if (!pt.tanggal) throw new Error('Tanggal pertemuan wajib diisi.');
-  const data = { rombelId: pt.rombelId, tanggal: pt.tanggal, pertemuanKe: pt.pertemuanKe || '', materi: pt.materi || '', catatan: pt.catatan || '' };
+  const data = {
+    rombelId: pt.rombelId, tanggal: pt.tanggal, pertemuanKe: pt.pertemuanKe || '', materi: pt.materi || '', catatan: pt.catatan || '',
+    jamKe: String(pt.jamKe || '').trim(), refBaik: pt.refBaik || '', refBelum: pt.refBelum || '', refTantangan: pt.refTantangan || '',
+  };
   let saved;
   if (pt.id) saved = dbUpdate_('Pertemuan', pt.id, data);
   else { data.dibuat = now_(); saved = dbInsert_('Pertemuan', data); }
@@ -306,7 +315,13 @@ function presensiSave_(p) {
   dbInsertMany_('Presensi', (p.records || []).map(function (r) {
     return { pertemuanId: saved.id, siswaId: r.siswaId, status: STATUS_PRESENSI[r.status] ? r.status : 'H', keterangan: r.keterangan || '' };
   }));
-  return saved;
+  // Kirim ke SiGuru tidak boleh menggagalkan penyimpanan di TeachDesk.
+  let siguru = null;
+  if (p.kirimSiGuru) {
+    try { siguru = Object.assign({ ok: true }, siguruKirim_({ pertemuanId: saved.id })); }
+    catch (e) { siguru = { ok: false, error: e.message }; }
+  }
+  return { pertemuan: saved, siguru: siguru };
 }
 
 function pertemuanDelete_(p) {

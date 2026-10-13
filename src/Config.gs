@@ -12,12 +12,16 @@ const SCHEMA = {
   Siswa: ['id', 'nis', 'nisn', 'nama', 'jk', 'kelas', 'tglLahir', 'namaOrtu', 'hpOrtu', 'catatan', 'aktif', 'dibuat'],
   // tipe: 'Mapel' | 'Ekskul'. Jika `kelas` diisi, anggota = semua siswa aktif di kelas tsb.
   // Jika kosong (mis. Ekskul Band), anggota diatur manual lewat sheet Anggota.
-  Rombel: ['id', 'nama', 'mapel', 'tipe', 'kelas', 'tahunAjaran', 'semester', 'kktp', 'jadwal', 'catatan', 'dibuat'],
+  Rombel: ['id', 'nama', 'mapel', 'tipe', 'kelas', 'tahunAjaran', 'semester', 'kktp', 'jadwal', 'catatan', 'dibuat',
+    'siguruKelas', 'siguruMapel'],   // diisi bila rombel ditarik dari SiGuru (teks kelas & mapel persis seperti di SiGuru)
   Anggota: ['id', 'rombelId', 'siswaId'],
   Asesmen: ['id', 'rombelId', 'judul', 'jenis', 'tanggal', 'bobot', 'maks', 'tp', 'catatan', 'dibuat'],
   Nilai: ['id', 'asesmenId', 'siswaId', 'nilai', 'catatan', 'diubah'],
   // Pertemuan = jurnal mengajar; Presensi = status tiap siswa di pertemuan tsb.
-  Pertemuan: ['id', 'rombelId', 'tanggal', 'pertemuanKe', 'materi', 'catatan', 'dibuat'],
+  Pertemuan: ['id', 'rombelId', 'tanggal', 'pertemuanKe', 'materi', 'catatan', 'dibuat',
+    'jamKe', 'refBaik', 'refBelum', 'refTantangan', 'siguruSync'],
+  // Salinan jadwal mengajar dari SiGuru (ditimpa setiap kali "Tarik dari SiGuru").
+  JadwalSiGuru: ['id', 'rombelId', 'hari', 'jamKe', 'kelas', 'mapel'],
   Presensi: ['id', 'pertemuanId', 'siswaId', 'status', 'keterangan'],
   Dokumen: ['id', 'jenis', 'judul', 'mapel', 'kelas', 'input', 'cuplikan', 'docUrl', 'dibuat', 'diubah'],
   // Isi dokumen AI dipotong per 40.000 karakter (batas 1 sel Sheets = 50.000).
@@ -36,8 +40,8 @@ const STATUS_PRESENSI = {
 };
 
 const DEFAULT_SETTINGS = {
-  namaGuru: '',
-  nip: '',
+  namaGuru: 'Joshua Kurniawan, S.Pd.',
+  nip: '200107262025051003',
   sekolah: '',
   kota: '',
   kepalaSekolah: '',
@@ -51,4 +55,11 @@ const DEFAULT_SETTINGS = {
   geminiModel: 'gemini-3.5-flash',
   aiModel: 'claude-opus-5-5',    // model Claude
   aiEffort: 'medium',
+  // Integrasi SiGuru (Jurnal Mengajar / Piket MAN 15) — ID diambil dari Code.gs SiGuru.
+  siguruAktif: 'true',
+  siguruSpreadsheetId: '1eJSZvX7ebwnIAzAeya0JUd2t4LFU70RQf9b1GJk1da8',
+  siguruSiswaId: '1y0XvwjgJCqcdK9lt709vHsIQyGoOEq7zcUZDwQ_ldcg',
+  siguruNip: '200107262025051003',
 };
+
+const HARI_ID = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];

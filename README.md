@@ -23,7 +23,7 @@ Web app untuk guru (Informatika, Bahasa Inggris, pembina Ekskul Band), dibangun 
 1. Buka [sheets.new](https://sheets.new) → beri nama, mis. **TeachDesk DB**.
 2. Menu **Extensions → Apps Script**.
 3. Buat file sesuai folder `src/` (nama harus sama, tanpa ekstensi):
-   - **Script** (`+` → *Script*): `Code`, `Config`, `Db`, `Services`, `Ai`, `AiTemplates`, `Dokumen`
+   - **Script** (`+` → *Script*): `Code`, `Config`, `Db`, `Services`, `Ai`, `AiTemplates`, `Dokumen`, `SiGuru`
    - **HTML** (`+` → *HTML*): `Index`, `Styles`, `App`, `Vendor`
    - Salin isi tiap file dari repo ini. Hapus isi bawaan `Code.gs` dulu.
 4. ⚙️ **Project Settings** → centang *Show "appsscript.json"* → salin isi `src/appsscript.json`.
@@ -75,12 +75,28 @@ Pilih penyedia di **Pengaturan → AI → Penyedia AI**. Key disimpan di *Script
    Key yang benar diawali **`sk-ant-`** dan hanya ditampilkan sekali. Teks `apikey_…` di daftar key adalah ID, bukan key.
 2. Pilih model: **Opus 5.5** (terbaik), **Sonnet 5.5** (cepat), **Haiku 5.5** (hemat).
 
+## 2b. Integrasi SiGuru (Jurnal Mengajar / Piket)
+
+TeachDesk terhubung langsung ke spreadsheet SiGuru. **Kode SiGuru tidak perlu diubah sama sekali.**
+Syaratnya: TeachDesk di-deploy dengan akun yang punya akses edit ke spreadsheet SiGuru (akun pemilik).
+
+| Arah | Yang terjadi |
+|---|---|
+| SiGuru → TeachDesk | **Tarik kelas, jadwal & siswa**: setiap pasangan kelas + mapel di *Jadwal Mengajar* (NIP Anda) menjadi rombel, jadwal hari/jam disalin, dan siswa kelas tsb diimpor dari *DATA_SISWA* (dicocokkan lewat NISN). Bisa diulang kapan saja tanpa duplikat. |
+| SiGuru → TeachDesk | **Tarik jurnal**: jurnal yang Anda isi di SiGuru menjadi Pertemuan + Presensi (nama di kolom Izin/Alpa/Sakit dicocokkan ke siswa). |
+| TeachDesk → SiGuru | Saat menyimpan presensi dengan centang **Kirim ke SiGuru**, satu baris ditulis ke *Log Mengajar* dengan format yang sama seperti aplikasi SiGuru, sehingga slot itu berstatus "Sudah Lapor". Jika disimpan ulang, baris yang sama diperbarui dan foto eviden lama tetap dipertahankan. |
+| Beranda | Kartu **Jadwal mengajar hari ini** menampilkan slot dari SiGuru beserta status jurnalnya. Hari dispensasi/libur dari SiGuru ikut ditampilkan. |
+
+Pengaturan ada di **Pengaturan → Integrasi SiGuru** (NIP, ID spreadsheet SiGuru, ID spreadsheet siswa). Nilai awalnya sudah diisi dari `Code.gs` SiGuru.
+
+Catatan: status *Terlambat* di TeachDesk dihitung hadir di SiGuru, karena SiGuru tidak punya status itu. Foto eviden tetap diunggah lewat aplikasi SiGuru.
+
 ## 3. Alur kerja harian yang disarankan
 
 1. **Awal semester** — Pengaturan profil → impor siswa (copy dari Dapodik/Excel) → buat rombel
    (`X-1 Informatika`, `XI-2 Bahasa Inggris`, `Ekskul Band` → pilih anggota).
 2. **Perencanaan** — AI Studio: Analisis CP → ATP → Prota/Promes → Modul Ajar per topik. Simpan ke arsip, ekspor ke Docs.
-3. **Setiap mengajar** — Beranda → *Isi presensi hari ini* → tulis materi (jurnal) → tandai yang tidak hadir → Simpan.
+3. **Setiap mengajar** — Beranda → *Jadwal mengajar hari ini* → **Isi presensi & jurnal** → tulis materi & refleksi → tandai yang tidak hadir → Simpan. Jurnal otomatis masuk ke SiGuru.
 4. **Setiap asesmen** — Penilaian → *+ Asesmen* (isi TP-nya!) → ketik nilai, Enter untuk turun → Simpan.
 5. **Akhir semester** — *Deskripsi rapor (AI)* → periksa & edit → CSV untuk e-Rapor. Rekap presensi → CSV.
 
@@ -107,11 +123,13 @@ src/
 ├── Ai.gs           callAi_ → Gemini / Claude (UrlFetchApp), model cadangan, deskripsi rapor (JSON)
 ├── AiTemplates.gs  katalog 22 jenis perangkat ← tambah jenis baru di sini
 ├── Dokumen.gs      arsip dokumen + konverter Markdown → Google Docs
+├── SiGuru.gs       integrasi Jurnal Mengajar SiGuru (tarik jadwal/siswa/jurnal, kirim jurnal)
 ├── Index.html      kerangka halaman
 ├── Styles.html     CSS (token warna, dark mode, responsif HP)
 ├── App.html        seluruh front-end (vanilla JS): VIEWS.dashboard, VIEWS.siswa, …
 └── Vendor.html     marked + DOMPurify (dibundel, tanpa CDN)
 dev/server.js       dev server lokal + mock SpreadsheetApp
+dev/siguru-demo.js  tiruan spreadsheet SiGuru untuk uji lokal
 ```
 
 ### Latihan pengembangan (mulai dari yang mudah)

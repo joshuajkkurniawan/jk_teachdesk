@@ -232,7 +232,7 @@ const VIEWS = {};
 
 // ---------------------------------------------------------------- Beranda
 VIEWS.dashboard = async (el) => {
-  const d = await call('dashboard');
+  const [d, jh] = await Promise.all([call('dashboard'), call('siguru.hariIni').catch((e) => ({ error: e.message, slots: [] }))]);
   const s = S.boot.settings;
   const h = new Date().getHours();
   const salam = h < 11 ? 'Selamat pagi' : h < 15 ? 'Selamat siang' : h < 18 ? 'Selamat sore' : 'Selamat malam';
@@ -255,6 +255,7 @@ VIEWS.dashboard = async (el) => {
         ['📊', d.stat.asesmen, 'Asesmen'], ['🗂️', d.stat.dokumen, 'Dokumen AI']]
         .map((x) => `<div class="card stat"><div class="l">${x[0]} ${x[2]}</div><div class="v">${x[1]}</div></div>`).join('')}
     </div>
+    ${jadwalHariIniHtml(jh)}
     <div class="card card-pad" style="margin-bottom:16px">
       <h2>Aksi cepat</h2>
       <div class="row" style="margin-top:12px">
@@ -279,6 +280,23 @@ VIEWS.dashboard = async (el) => {
           : '<div class="empty small">Belum ada dokumen. Coba AI Studio ✨</div>'}</div>
     </div>`;
 };
+
+function jadwalHariIniHtml(jh) {
+  if (!jh || (!jh.slots.length && !jh.error)) return '';
+  return `<div class="card" style="margin-bottom:16px">
+    <div class="card-head"><h2>🗓️ Jadwal mengajar hari ini${jh.hari ? ' — ' + esc(jh.hari) : ''}</h2><span class="small muted">dari SiGuru</span></div>
+    ${jh.dispensasi ? `<div class="list-item"><span class="badge badge-warn">Dispensasi/Libur</span> ${esc(jh.dispensasi)} — tidak wajib jurnal.</div>` : ''}
+    ${jh.error ? `<div class="list-item small" style="color:var(--danger)">⚠️ SiGuru tidak terbaca: ${esc(jh.error)}</div>` : ''}
+    ${jh.slots.map((x) => `<div class="list-item">
+      <div style="min-width:70px"><b>Jam ${esc(x.jamKe)}</b></div>
+      <div style="flex:1"><b>${esc(x.kelas)}</b> <span class="muted">· ${esc(x.mapel)}</span></div>
+      ${x.sudahSiGuru ? '<span class="badge badge-ok">✓ Jurnal SiGuru</span>' : '<span class="badge badge-warn">Belum jurnal</span>'}
+      <button class="btn btn-sm ${x.sudahSiGuru ? '' : 'btn-primary'}" onclick='go("presensi", ${JSON.stringify(x.pertemuanId
+        ? { rombelId: x.rombelId, pertemuanId: x.pertemuanId }
+        : { rombelId: x.rombelId, baru: true, tanggal: jh.tanggal, jamKe: x.jamKe }).replace(/'/g, '&#39;')})'>${x.pertemuanId ? 'Buka' : 'Isi presensi & jurnal'}</button>
+    </div>`).join('')}
+  </div>`;
+}
 
 // ---------------------------------------------------------------- Siswa
 const SISWA_FIELDS = [
@@ -396,7 +414,7 @@ VIEWS.rombel = async (el) => {
       <button class="btn btn-primary" id="btnAdd">+ Tambah</button></div>
     ${list.length ? `<div class="grid grid-cards">${list.map((r) => `
       <div class="card card-pad stack">
-        <div class="row"><h2 style="flex:1">${esc(r.nama)}</h2><span class="badge ${r.tipe === 'Ekskul' ? 'badge-warn' : 'badge-primary'}">${esc(r.tipe)}</span></div>
+        <div class="row"><h2 style="flex:1">${esc(r.nama)}</h2>${r.siguruKelas ? '<span class="badge badge-info" title="Terhubung ke SiGuru">🔗 SiGuru</span>' : ''}<span class="badge ${r.tipe === 'Ekskul' ? 'badge-warn' : 'badge-primary'}">${esc(r.tipe)}</span></div>
         <div class="small muted">${esc(r.mapel || '-')} · ${r.kelas ? 'Kelas ' + esc(r.kelas) : 'Anggota manual'} · <b>${r.jumlahSiswa}</b> siswa
           ${r.jadwal ? '<br>🕑 ' + esc(r.jadwal) : ''}${r.kktp ? '<br>KKTP ' + esc(r.kktp) : ''}</div>
         <div class="row">
@@ -623,7 +641,7 @@ VIEWS.presensi = async (el) => {
   if (!S.boot.rombel.length) { el.innerHTML = noRombelHtml(); return; }
   const rombelId = currentRombel();
   store.set('rombel', rombelId);
-  if (S.params.baru || S.params.pertemuanId) return presensiForm(el, rombelId, S.params.pertemuanId);
+  if (S.params.baru || S.params.pertemuanId) return presensiForm(el, rombelId, S.params.pertemuanId, S.params);
   const tab = S.params.tab || 'jurnal';
   el.innerHTML = `
     <div class="page-head"><div><h1>Presensi &amp; Jurnal</h1><p>Setiap pertemuan mencatat materi (jurnal mengajar) sekaligus kehadiran siswa.</p></div>
@@ -638,8 +656,8 @@ VIEWS.presensi = async (el) => {
 
   if (tab === 'jurnal') {
     const d = await call('presensi.list', { rombelId });
-    body.innerHTML = d.pertemuan.length ? `<div class="card table-wrap"><table class="t"><thead><tr><th>Ke-</th><th>Tanggal</th><th>Materi / kegiatan</th><th>Kehadiran</th><th></th></tr></thead><tbody>
-      ${d.pertemuan.map((p) => `<tr><td>${esc(p.pertemuanKe)}</td><td>${fmtDate(p.tanggal)}</td><td>${esc(p.materi || '-')}${p.catatan ? `<div class="small muted">${esc(p.catatan)}</div>` : ''}</td>
+    body.innerHTML = d.pertemuan.length ? `<div class="card table-wrap"><table class="t"><thead><tr><th>Ke-</th><th>Tanggal</th><th>Jam</th><th>Materi / kegiatan</th><th>Kehadiran</th><th></th></tr></thead><tbody>
+      ${d.pertemuan.map((p) => `<tr><td>${esc(p.pertemuanKe)}</td><td>${fmtDate(p.tanggal)}</td><td>${esc(p.jamKe || '-')}</td><td>${esc(p.materi || '-')}${p.siguruSync ? ' <span class="badge badge-info" title="Terkirim ke SiGuru">🔗 SiGuru</span>' : ''}${p.catatan ? `<div class="small muted">${esc(p.catatan)}</div>` : ''}</td>
         <td><div class="row">${Object.keys(p.ringkasan).filter((k) => p.ringkasan[k]).map((k) => `<span class="badge ${k === 'H' ? 'badge-ok' : k === 'A' ? 'badge-danger' : k === 'T' ? 'badge-info' : 'badge-warn'}">${k} ${p.ringkasan[k]}</span>`).join('')}</div></td>
         <td class="num"><button class="btn btn-sm" data-open="${p.id}">Buka</button> <button class="btn btn-sm btn-danger" data-del="${p.id}">Hapus</button></td></tr>`).join('')}
       </tbody></table></div>
@@ -667,8 +685,16 @@ VIEWS.presensi = async (el) => {
   }
 };
 
-async function presensiForm(el, rombelId, pertemuanId) {
-  const d = await call('presensi.form', { rombelId, pertemuanId });
+async function presensiForm(el, rombelId, pertemuanId, opts) {
+  opts = opts || {};
+  const d = await call('presensi.form', { rombelId, pertemuanId, tanggal: opts.tanggal, jamKe: opts.jamKe });
+  const pt = d.pertemuan;
+  const hariTgl = (iso) => ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'][new Date(iso + 'T00:00:00').getDay()];
+  // Jam ke: otomatis dari jadwal SiGuru bila hari tanggal ini hanya punya satu slot.
+  if (!pt.jamKe && d.slots.length) {
+    const cocok = d.slots.filter((x) => x.hari === hariTgl(pt.tanggal));
+    if (cocok.length === 1) pt.jamKe = cocok[0].jamKe;
+  }
   const st = {};
   d.siswa.forEach((s) => { st[s.id] = d.status[s.id] || { status: 'H', keterangan: '' }; });
   const kode = Object.keys(d.kode);
@@ -681,9 +707,20 @@ async function presensiForm(el, rombelId, pertemuanId) {
     <div class="card card-pad" style="margin-bottom:16px"><div class="form-grid">
       ${fieldHtml({ key: 'tanggal', label: 'Tanggal', type: 'date', required: true }, d.pertemuan.tanggal)}
       ${fieldHtml({ key: 'pertemuanKe', label: 'Pertemuan ke-', type: 'number' }, d.pertemuan.pertemuanKe)}
-      ${fieldHtml({ key: 'materi', label: 'Materi / kegiatan (jurnal)', full: true, placeholder: 'mis. Pengenalan Python: variabel & tipe data' }, d.pertemuan.materi)}
-      ${fieldHtml({ key: 'catatan', label: 'Catatan kejadian / refleksi', type: 'textarea' }, d.pertemuan.catatan)}
-    </div></div>
+      <label class="f" for="f_jamKe"><span>Jam ke- ${d.siguru ? '<span class="req">*</span>' : ''}</span>
+        <input id="f_jamKe" name="jamKe" list="dl_jam" value="${esc(pt.jamKe)}" placeholder="mis. 1-2">
+        <datalist id="dl_jam">${d.slots.map((x) => `<option value="${esc(x.jamKe)}">${esc(x.hari)}</option>`).join('')}</datalist>
+        ${d.slots.length ? `<span class="small muted" style="font-weight:400">Jadwal SiGuru: ${d.slots.map((x) => esc(x.hari + ' jam ' + x.jamKe)).join(' · ')}</span>` : ''}</label>
+      ${fieldHtml({ key: 'materi', label: 'Materi / kegiatan (jurnal)', full: true, placeholder: 'mis. Pengenalan Python: variabel & tipe data', required: d.siguru }, pt.materi)}
+      ${fieldHtml({ key: 'refBaik', label: 'Refleksi: yang sudah baik', type: 'textarea', rows: 2, required: d.siguru }, pt.refBaik)}
+      ${fieldHtml({ key: 'refBelum', label: 'Refleksi: yang belum baik', type: 'textarea', rows: 2, required: d.siguru }, pt.refBelum)}
+      ${fieldHtml({ key: 'refTantangan', label: 'Refleksi: tantangan', type: 'textarea', rows: 2 }, pt.refTantangan)}
+      ${fieldHtml({ key: 'catatan', label: 'Catatan pribadi (tidak dikirim ke SiGuru)', type: 'textarea', rows: 2 }, pt.catatan)}
+    </div>
+    ${d.siguru ? `<label class="row" style="margin-top:14px;cursor:pointer"><input type="checkbox" id="kirimSiGuru" style="width:auto" checked>
+      <span><b>Kirim juga ke jurnal SiGuru</b> <span class="small muted">— Izin/Alpa/Sakit ikut terisi. Terlambat dihitung hadir di SiGuru.
+      ${pt.siguruSync ? ' Terakhir terkirim ' + fmtDate(pt.siguruSync) + '.' : ''}</span></span></label>` : ''}
+    </div>
     <div class="toolbar"><b>Kehadiran (${d.siswa.length} siswa)</b><span class="spacer"></span><span id="sum" class="row"></span>
       <button class="btn btn-sm" id="allH">Semua hadir</button></div>
     ${d.siswa.length ? `<div class="card table-wrap"><table class="t"><tbody>
@@ -704,14 +741,22 @@ async function presensiForm(el, rombelId, pertemuanId) {
   $('#allH').onclick = () => { Object.values(st).forEach((x) => { x.status = 'H'; }); changed = true; paint(); };
   $('#btnBack').onclick = () => go('presensi', { rombelId });
   $('#btnSave').onclick = async () => {
-    const f = readForm(el, [{ key: 'tanggal' }, { key: 'pertemuanKe' }, { key: 'materi' }, { key: 'catatan' }]);
+    const f = readForm(el, ['tanggal', 'pertemuanKe', 'jamKe', 'materi', 'refBaik', 'refBelum', 'refTantangan', 'catatan'].map((key) => ({ key })));
+    const kirim = !!($('#kirimSiGuru') && $('#kirimSiGuru').checked);
+    if (kirim) {
+      const kurang = [['jamKe', 'Jam ke'], ['materi', 'Materi'], ['refBaik', 'Refleksi sudah baik'], ['refBelum', 'Refleksi belum baik']]
+        .filter((x) => !String(f[x[0]] || '').trim()).map((x) => x[1]);
+      if (kurang.length) return fail(new Error('Untuk dikirim ke SiGuru, lengkapi: ' + kurang.join(', ') + ' (atau hilangkan centang "Kirim ke SiGuru").'));
+    }
     const btn = $('#btnSave'); btn.disabled = true;
     try {
-      await call('presensi.save', {
-        pertemuan: Object.assign({ id: d.pertemuan.id, rombelId }, f),
+      const res = await call('presensi.save', {
+        pertemuan: Object.assign({ id: pt.id, rombelId }, f), kirimSiGuru: kirim,
         records: Object.keys(st).map((id) => ({ siswaId: id, status: st[id].status, keterangan: st[id].keterangan })),
       });
-      toast('Presensi & jurnal tersimpan', 'ok');
+      if (res.siguru && !res.siguru.ok) toast('Tersimpan di TeachDesk, tetapi gagal ke SiGuru: ' + res.siguru.error, 'err');
+      else if (res.siguru) toast(`Tersimpan & jurnal SiGuru ${res.siguru.mode} (${res.siguru.kelas} jam ${res.siguru.jamKe})`, 'ok');
+      else toast('Presensi & jurnal tersimpan', 'ok');
       changed = false;
       go('presensi', { rombelId });
     } catch (e) { fail(e); btn.disabled = false; }
@@ -865,6 +910,12 @@ VIEWS.dokumen = async (el) => {
 };
 
 // ---------------------------------------------------------------- Pengaturan
+const SG_FIELDS = [
+  { key: 'siguruAktif', label: 'Status integrasi', type: 'select', options: [{ value: 'true', label: 'Aktif' }, { value: 'false', label: 'Nonaktif' }] },
+  { key: 'siguruNip', label: 'NIP Anda di SiGuru', required: true },
+  { key: 'siguruSpreadsheetId', label: 'ID spreadsheet SiGuru (SPREADSHEET_ID)', full: true, help: 'Dari Code.gs SiGuru, atau bagian URL spreadsheet antara /d/ dan /edit.' },
+  { key: 'siguruSiswaId', label: 'ID spreadsheet data siswa (SISWA_SPREADSHEET_ID)', full: true },
+];
 VIEWS.pengaturan = async (el) => {
   const s = await call('settings.get');
   S.boot.settings = s;
@@ -927,11 +978,41 @@ VIEWS.pengaturan = async (el) => {
         </form>
         <div class="row"><button class="btn btn-primary" id="saveAi">Simpan pengaturan AI</button><button class="btn" id="testAi" ${s.hasApiKey ? '' : 'disabled'}>🔌 Tes koneksi</button>
           <span id="testOut" class="small muted"></span></div></div></div>
+      <div class="card"><div class="card-head"><h2>🔗 Integrasi SiGuru (Jurnal Mengajar)</h2>${s.siguruAktif === 'false' ? '<span class="badge">Nonaktif</span>' : '<span class="badge badge-info">Aktif</span>'}</div><div class="card-pad stack">
+        <p class="small muted" style="margin:0">TeachDesk membaca jadwal &amp; siswa dari SiGuru dan menulis jurnal ke sheet <b>Log Mengajar</b> dengan format yang sama seperti aplikasi SiGuru. Kode SiGuru tidak diubah.</p>
+        <form class="form-grid" id="fSg" onsubmit="return false">${SG_FIELDS.map((f) => fieldHtml(f, s[f.key])).join('')}</form>
+        <div class="row"><button class="btn btn-primary" id="sgSave">Simpan</button><button class="btn" id="sgCek">🔌 Cek koneksi</button>
+          <button class="btn" id="sgTarik">⬇️ Tarik kelas, jadwal &amp; siswa</button><button class="btn" id="sgJurnal">⬇️ Tarik jurnal dari SiGuru</button></div>
+        <div id="sgOut" class="small"></div></div></div>
       <div class="card"><div class="card-head"><h2>🗄️ Data &amp; tampilan</h2></div><div class="card-pad stack">
         <div>Semua data tersimpan di Google Spreadsheet milik Anda: <a href="${esc(S.boot.dbUrl)}" target="_blank" rel="noopener">buka database ↗</a>. Backup cukup dengan <i>File → Make a copy</i>.</div>
         <label class="f" style="max-width:260px">Tema<select id="selTheme"><option value="auto">Otomatis (ikuti perangkat)</option><option value="light">Terang</option><option value="dark">Gelap</option></select></label>
         <div class="small muted">${esc(S.boot.app.nama)} v${esc(S.boot.app.versi)}</div></div></div>
     </div>`;
+  const sgOut = (html) => { $('#sgOut').innerHTML = html; };
+  const sgRun = async (btn, label, fn) => {
+    btn.disabled = true; sgOut('⏳ ' + label + '…');
+    try { await fn(); } catch (e) { sgOut('❌ ' + esc(e.message)); } finally { btn.disabled = false; }
+  };
+  $('#sgSave').onclick = (e) => saveWith(e.target, readForm($('#fSg'), SG_FIELDS), 'Pengaturan SiGuru tersimpan');
+  $('#sgCek').onclick = (e) => sgRun(e.target, 'Menghubungi SiGuru', async () => {
+    await call('settings.save', readForm($('#fSg'), SG_FIELDS));
+    const r = await call('siguru.status');
+    sgOut(`✅ Terhubung sebagai <b>${esc(r.nama)}</b> (${esc(r.mapelUtama)}). ${r.jumlahJadwal} jam jadwal: ${r.kelas.map(esc).join(', ')}.
+      Data siswa SiGuru: ${esc(r.siswaSiGuru)} baris. <a href="${esc(r.url)}" target="_blank" rel="noopener">Buka spreadsheet SiGuru ↗</a>`);
+  });
+  $('#sgTarik').onclick = (e) => sgRun(e.target, 'Menarik kelas, jadwal & siswa', async () => {
+    await call('settings.save', readForm($('#fSg'), SG_FIELDS));
+    const r = await call('siguru.tarik');
+    S.boot.settings = await call('settings.get'); await refreshRombel(); S.boot.kelas = await call('kelas.list'); paintFoot();
+    sgOut(`✅ ${r.rombelBaru} kelas baru, ${r.rombelUpdate} diperbarui, ${r.jadwal} jam jadwal. Siswa: ${r.siswa.baru} baru, ${r.siswa.update} diperbarui${r.siswa.catatan ? ' (' + esc(r.siswa.catatan) + ')' : ''}.
+      <button class="btn btn-sm" onclick="go('rombel')">Lihat kelas</button>`);
+  });
+  $('#sgJurnal').onclick = (e) => sgRun(e.target, 'Menarik jurnal dari SiGuru', async () => {
+    const r = await call('siguru.tarikJurnal');
+    sgOut(`✅ ${r.ditambah} jurnal ditambahkan ke Presensi &amp; Jurnal, ${r.dilewati} sudah ada (dilewati).` +
+      (r.tidakDikenal.length ? `<br>⚠️ Nama tidak cocok dengan data siswa (dicatat di catatan pertemuan): ${r.tidakDikenal.map(esc).join(', ')}` : ''));
+  });
   $('#selTheme').value = theme;
   $('#selTheme').onchange = (e) => { store.set('theme', e.target.value); applyTheme(); };
   const saveWith = async (btn, values, msg) => {
